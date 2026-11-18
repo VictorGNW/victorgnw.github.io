@@ -4,6 +4,8 @@
 
 Aplicação de achados e perdidos da EEEM Nossa Senhora de Lourdes. O mesmo serviço Node.js entrega a interface e a API; o GitHub guarda o código e o Render executa a aplicação.
 
+> **Hospedagem temporária:** atualmente, o site está sendo hospedado no Render. O GitHub é utilizado para armazenar e versionar o código-fonte.
+
 ## Funcionalidades
 
 - Lista pública com busca, filtros, ordenação e fotos opcionais
