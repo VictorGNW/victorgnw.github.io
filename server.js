@@ -8,7 +8,8 @@
    CONFIGURAÇÃO (variáveis de ambiente):
      SENHA_COORDENACAO   senha da coordenação (OBRIGATÓRIA; o servidor não liga sem ela)
      PORT                porta do servidor (padrão 3000)
-     HOST                endereço de escuta (padrão 127.0.0.1: só o proxy/túnel acessa)
+     HOST                endereço de escuta (padrão 0.0.0.0, necessário no Render)
+     DATA_DIR            pasta persistente dos dados (no Render: /var/data)
      CONFIAR_PROXY       "sim" quando há Caddy/Cloudflare na frente (usa o IP real do visitante)
      BACKUPS_MANTER      quantos backups guardar (padrão 14)
      HTTPS_CERT          caminho do certificado (.pem/.crt) para o servidor falar HTTPS sozinho
@@ -44,11 +45,11 @@ const CATEGORIAS = ["Roupas", "Material escolar", "Eletrônicos", "Garrafas e la
 const LOCAIS = ["Pátio", "Cantina", "Biblioteca", "Laboratório de informática", "Quadra", "Salas de aula"];
 const MAX_ITENS = 2000;    // teto de itens guardados (evita encher o disco)
 const MAX_PEDIDOS = 10000; // teto de pedidos guardados
-const HOST = process.env.HOST || "127.0.0.1";
+const HOST = process.env.HOST || "0.0.0.0";
 const CONFIAR_PROXY = process.env.CONFIAR_PROXY === "sim";
 const BACKUPS_MANTER = Number(process.env.BACKUPS_MANTER) || 14;
 const RAIZ = __dirname;
-const PASTA_DADOS = path.join(RAIZ, "dados");
+const PASTA_DADOS = path.resolve(process.env.DATA_DIR || path.join(RAIZ, "dados"));
 const PASTA_FOTOS = path.join(PASTA_DADOS, "fotos");
 const ARQ_BANCO = path.join(PASTA_DADOS, "banco.json");
 const PASTA_BACKUPS = path.join(PASTA_DADOS, "backups");
@@ -114,27 +115,36 @@ function gravarBanco(banco) {
 
 function lerBanco() {
   garantirPastas();
+  if (!fs.existsSync(ARQ_BANCO)) {
+    const novo = exemplos();
+    gravarBanco(novo);
+    return novo;
+  }
+
+  let b;
   try {
-    const b = JSON.parse(fs.readFileSync(ARQ_BANCO, "utf8"));
-    if (b && Array.isArray(b.itens) && Array.isArray(b.pedidos) && Number.isInteger(b.prox)) {
-      let migrado = false;
-      for (const pedido of b.pedidos) {
-        if (!pedido.alunoRa && Number.isInteger(pedido.alunoId)) {
-          const aluno = BancoAlunos.porId(pedido.alunoId);
-          if (aluno) { pedido.alunoRa = aluno.codigo; migrado = true; }
-        }
-        if (pedido.status === "liberado") {
-          const item = b.itens.find(i => i.id === pedido.itemId);
-          if (item && item.status === "disponivel") { item.status = "retirada_liberada"; migrado = true; }
-        }
-      }
-      if (migrado) gravarBanco(b);
-      return b;
+    b = JSON.parse(fs.readFileSync(ARQ_BANCO, "utf8"));
+  } catch (e) {
+    throw new Error("O banco de dados existe, mas não pôde ser lido. Os dados foram preservados em " + ARQ_BANCO + "; restaure uma cópia de segurança antes de reiniciar.", { cause: e });
+  }
+
+  if (!b || !Array.isArray(b.itens) || !Array.isArray(b.pedidos) || !Number.isInteger(b.prox)) {
+    throw new Error("O banco de dados existe, mas tem formato inválido. Os dados foram preservados em " + ARQ_BANCO + "; restaure uma cópia de segurança antes de reiniciar.");
+  }
+
+  let migrado = false;
+  for (const pedido of b.pedidos) {
+    if (!pedido.alunoRa && Number.isInteger(pedido.alunoId)) {
+      const aluno = BancoAlunos.porId(pedido.alunoId);
+      if (aluno) { pedido.alunoRa = aluno.codigo; migrado = true; }
     }
-  } catch (e) { /* arquivo não existe ou está inválido: recria abaixo */ }
-  const novo = exemplos();
-  gravarBanco(novo);
-  return novo;
+    if (pedido.status === "liberado") {
+      const item = b.itens.find(i => i.id === pedido.itemId);
+      if (item && item.status === "disponivel") { item.status = "retirada_liberada"; migrado = true; }
+    }
+  }
+  if (migrado) gravarBanco(b);
+  return b;
 }
 
 function apagarFotos() {

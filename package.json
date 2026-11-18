@@ -1,0 +1,12 @@
+{
+  "name": "achados-do-lourdes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplicação única de achados e perdidos da EEEM Nossa Senhora de Lourdes",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
