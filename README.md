@@ -17,13 +17,6 @@ O backup automático inclui apenas o JSON, não as fotos. Para uma cópia comple
 
 Anexe o disco antes do primeiro uso com dados reais. Se já houver dados em outra hospedagem, copie o conteúdo da antiga pasta `dados/` para `/var/data` no disco persistente antes de apontar o serviço para ele.
 
-### Segurança e contas de demonstração
-
-- Defina `SENHA_COORDENACAO` nos segredos do Render; não a adicione ao GitHub.
-- `banco.js` contém alunos e códigos de RA de demonstração. O login de aluno usa somente o RA; substitua esses dados e confirme o método de autenticação com a escola antes de inserir dados reais.
-- Tokens de sessão e limites de requisição ficam em memória. Reiniciar o serviço encerra as sessões e reinicia esses limites.
-- Os pedidos contêm nome e turma. Restrinja o acesso ao painel e mantenha backups em local protegido.
-
 ## Arquivos
 
 - `server.js`: servidor HTTP, API, autenticação, armazenamento e backups
