@@ -6,8 +6,11 @@
    Não precisa instalar nada: basta ter o Node.js (versão 18 ou mais nova).
 
    CONFIGURAÇÃO (variáveis de ambiente):
-     SENHA_COORDENACAO   senha da coordenação (OBRIGATÓRIA; o servidor não liga sem ela)
-     PORT                porta do servidor (padrão 3000)
+     SENHA_COORDENACAO   senha da coordenação (OBRIGATÓRIA; o servidor não liga sem ela). É a conta "coordenacao"
+     CONTAS_COORDENACAO  (opcional) contas extras para o registro de atividades saber quem fez cada ação.
+                         Formato:  usuario:senha;outro:senha2   (usuário com 2 a 30 letras minúsculas, números, . _ -;
+                         senha com 8+ caracteres e sem ";"). Quem não preencher o usuário no login entra como "coordenacao".
+     PORT               porta do servidor (padrão 3000)
      HOST                endereço de escuta (padrão 0.0.0.0, necessário no Render)
      DATA_DIR            pasta persistente dos dados (no Render: /var/data)
      CONFIAR_PROXY       "sim" quando há Caddy/Cloudflare na frente (usa o IP real do visitante)
@@ -59,9 +62,30 @@ if (SENHA.length < 8) {
   console.error('Exemplo:  SENHA_COORDENACAO="troque-esta-senha" node server.js\n');
   process.exit(1);
 }
-if (["lourdes", "12345678", "password", "senha123"].includes(SENHA.toLowerCase())) {
+const SENHAS_FRACAS = ["lourdes", "12345678", "password", "senha123"];
+if (SENHAS_FRACAS.includes(SENHA.toLowerCase())) {
   console.error("\nERRO: essa senha é fraca demais para ficar na internet. Escolha outra.\n");
   process.exit(1);
+}
+
+/* Contas da coordenação: "coordenacao" (SENHA_COORDENACAO) e as extras de CONTAS_COORDENACAO.
+   Cada ação administrativa fica registrada com o nome da conta que a fez. */
+const CONTA_PADRAO = "coordenacao";
+const CONTAS = new Map([[CONTA_PADRAO, SENHA]]); // usuário -> senha
+for (const parte of (process.env.CONTAS_COORDENACAO || "").split(";")) {
+  if (!parte.trim()) continue;
+  const pos = parte.indexOf(":");
+  const usuario = (pos < 0 ? parte : parte.slice(0, pos)).trim().toLowerCase();
+  const senhaConta = pos < 0 ? "" : parte.slice(pos + 1);
+  if (!/^[a-z0-9._-]{2,30}$/.test(usuario) || CONTAS.has(usuario)) {
+    console.error('\nERRO em CONTAS_COORDENACAO: usuário inválido, repetido ou reservado ("' + usuario.slice(0, 30) + '"). Use o formato usuario:senha;outro:senha2\n');
+    process.exit(1);
+  }
+  if (senhaConta.length < 8 || SENHAS_FRACAS.includes(senhaConta.toLowerCase())) {
+    console.error('\nERRO em CONTAS_COORDENACAO: a senha da conta "' + usuario + '" é curta (mínimo 8 caracteres) ou fraca demais.\n');
+    process.exit(1);
+  }
+  CONTAS.set(usuario, senhaConta);
 }
 const LIMITE_CORPO = 2 * 1024 * 1024; // 2 MB por requisição (as fotos já chegam reduzidas a 640 px)
 
@@ -97,7 +121,9 @@ const exemplos = () => ({
     { id: 6, nome: "Estojo vermelho", cat: "Material escolar", local: "Biblioteca", data: dia(6), desc: "Estojo com canetas coloridas e uma calculadora.", status: "disponivel" }
   ],
   pedidos: [],
-  prox: 7
+  prox: 7,
+  atividades: [], proxAtiv: 1,     // registro de ações da coordenação
+  notificacoes: [], proxNotif: 1   // avisos para a coordenação e para os alunos
 });
 
 function garantirPastas() {
@@ -143,6 +169,12 @@ function lerBanco() {
       if (item && item.status === "disponivel") { item.status = "retirada_liberada"; migrado = true; }
     }
   }
+  // bancos criados antes do registro de atividades e das notificações ganham os campos novos
+  if (!Array.isArray(b.atividades)) { b.atividades = []; migrado = true; }
+  if (!Array.isArray(b.notificacoes)) { b.notificacoes = []; migrado = true; }
+  const maiorId = lista => lista.reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0);
+  if (!Number.isInteger(b.proxAtiv)) { b.proxAtiv = maiorId(b.atividades) + 1; migrado = true; }
+  if (!Number.isInteger(b.proxNotif)) { b.proxNotif = maiorId(b.notificacoes) + 1; migrado = true; }
   if (migrado) gravarBanco(b);
   return b;
 }
@@ -217,9 +249,9 @@ const limiteRA = criarLimite(LIMITE_RA_ERROS, 15 * 60 * 1000); // erros de RA po
 const limiteGeral = criarLimite(300, 60 * 1000);      // 300 chamadas à API por minuto por IP
 
 /* Compara senhas sem vazar informação pelo tempo de resposta */
-function senhaConfere(informada) {
+function senhaConfere(informada, esperada = SENHA) {
   const a = crypto.createHash("sha256").update(String(informada || "")).digest();
-  const b = crypto.createHash("sha256").update(SENHA).digest();
+  const b = crypto.createHash("sha256").update(esperada).digest();
   return crypto.timingSafeEqual(a, b);
 }
 
@@ -260,10 +292,10 @@ function registrarSeguranca(evento, ip, detalhe) {
 
 const VALIDADE_SESSAO = 8 * 60 * 60 * 1000; // 8 horas
 const MAX_SESSOES = 50;
-const sessoes = new Map(); // token -> instante de expiração (fica só na memória)
+const sessoes = new Map(); // token -> { expira, conta } (fica só na memória)
 setInterval(() => { // limpa sessões vencidas que ninguém usou mais
   const agora = Date.now();
-  for (const [t, expira] of sessoes) if (agora > expira) sessoes.delete(t);
+  for (const [t, sess] of sessoes) if (agora > sess.expira) sessoes.delete(t);
   for (const [t, sess] of sessoesAluno) if (agora > sess.expira) sessoesAluno.delete(t);
 }, 10 * 60 * 1000).unref();
 
@@ -282,13 +314,18 @@ function alunoDaSessao(req) {
   return BancoAlunos.porId(sess.id);
 }
 
-function coordenacaoLogada(req) {
+/* Nome da conta da coordenação dona da sessão (ou null se não estiver logada) */
+function contaDaSessao(req) {
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const expira = sessoes.get(token);
-  if (!expira) return false;
-  if (Date.now() > expira) { sessoes.delete(token); return false; }
-  return true;
+  const sess = sessoes.get(token);
+  if (!sess) return null;
+  if (Date.now() > sess.expira) { sessoes.delete(token); return null; }
+  return sess.conta;
+}
+
+function coordenacaoLogada(req) {
+  return !!contaDaSessao(req);
 }
 
 /* ---------- Utilidades de HTTP ---------- */
@@ -348,6 +385,70 @@ function salvarFoto(dataUrl) {
   return "dados/fotos/" + nome;
 }
 
+/* ---------- Registro de atividades, notificações e painel ---------- */
+
+const MAX_ATIVIDADES = 5000;     // as mais antigas saem quando passa do teto
+const MAX_NOTIFICACOES = 5000;
+const DIAS_NOTIFICACAO_LIDA = 30; // avisos já lidos são apagados depois disso
+const PARA_COORDENACAO = "coordenacao"; // destinatário das notificações da coordenação (alunos usam o id numérico)
+
+/* Anota no banco (b) uma ação administrativa e a conta que a fez. Chame antes de gravarBanco(b). */
+function registrarAtividade(b, conta, acao, descricao, extra) {
+  b.atividades.push({ id: b.proxAtiv++, em: new Date().toISOString(), conta: texto(conta, 30) || "?", acao, descricao: texto(descricao, 300), ...(extra || {}) });
+  if (b.atividades.length > MAX_ATIVIDADES) b.atividades.splice(0, b.atividades.length - MAX_ATIVIDADES);
+}
+
+/* Cria uma notificação para a coordenação (PARA_COORDENACAO) ou para um aluno (id). Chame antes de gravarBanco(b). */
+function notificar(b, para, tipo, msg, extra) {
+  if (para === null || para === undefined) return;
+  b.notificacoes.push({ id: b.proxNotif++, em: new Date().toISOString(), para, tipo, texto: texto(msg, 300), lida: false, ...(extra || {}) });
+  const limite = Date.now() - DIAS_NOTIFICACAO_LIDA * 86400000;
+  b.notificacoes = b.notificacoes.filter(n => !n.lida || Date.parse(n.em) > limite);
+  if (b.notificacoes.length > MAX_NOTIFICACOES) b.notificacoes.splice(0, b.notificacoes.length - MAX_NOTIFICACOES);
+}
+
+/* Id do aluno dono do pedido (pedidos antigos podem ter só o RA) */
+function alunoIdDoPedido(p) {
+  if (Number.isInteger(p.alunoId)) return p.alunoId;
+  const aluno = p.alunoRa ? BancoAlunos.porCodigo(p.alunoRa) : null;
+  return aluno ? aluno.id : null;
+}
+
+const nomeDoItem = item => item ? item.nome : "item removido";
+
+/* Números do painel de situação, tirados direto dos itens e pedidos. Cada item cai em UMA só faixa:
+   cadastrados = devolvidos + aguardando retirada + novas solicitações. */
+function calcularPainel(b) {
+  const comPedidoNovo = new Set(b.pedidos.filter(p => p.status === "pendente").map(p => p.itemId));
+  let devolvidos = 0, retiradaLiberada = 0, semDono = 0, novasSolicitacoes = 0;
+  for (const i of b.itens) {
+    if (i.status === "devolvido") devolvidos++;
+    else if (i.status === "retirada_liberada") retiradaLiberada++;
+    else if (comPedidoNovo.has(i.id)) novasSolicitacoes++;
+    else semDono++;
+  }
+  return { cadastrados: b.itens.length, devolvidos, aguardandoRetirada: semDono + retiradaLiberada, novasSolicitacoes, detalhe: { semDono, retiradaLiberada } };
+}
+
+function resumoNotificacoes(b, para) {
+  const minhas = b.notificacoes.filter(n => n.para === para);
+  return { minhas, naoLidas: minhas.filter(n => !n.lida).length, ultimoId: minhas.reduce((m, n) => Math.max(m, n.id), 0) };
+}
+
+/* ?resumo=1 devolve só os contadores (usado na checagem periódica); sem isso, as 50 mais recentes */
+function responderNotificacoes(req, res, b, para) {
+  const r = resumoNotificacoes(b, para);
+  if (new URL(req.url, "http://localhost").searchParams.get("resumo")) return responderJSON(res, 200, { naoLidas: r.naoLidas, ultimoId: r.ultimoId });
+  const lista = r.minhas.slice(-50).reverse().map(n => ({ id: n.id, em: n.em, tipo: n.tipo, texto: n.texto, lida: !!n.lida, pedidoId: n.pedidoId }));
+  return responderJSON(res, 200, { naoLidas: r.naoLidas, ultimoId: r.ultimoId, notificacoes: lista });
+}
+
+function marcarLidas(b, para) {
+  let mudou = false;
+  for (const n of b.notificacoes) if (n.para === para && !n.lida) { n.lida = true; mudou = true; }
+  return mudou;
+}
+
 /* ---------- API ---------- */
 
 async function api(req, res, rota) {
@@ -358,7 +459,11 @@ async function api(req, res, rota) {
     // GET /api/dados -> dados completos para a coordenação; visão pública com nomes mínimos.
     if (req.method === "GET" && rota === "/api/dados") {
       const b = lerBanco();
-      if (coordenacaoLogada(req)) return responderJSON(res, 200, b);
+      if (coordenacaoLogada(req)) {
+        // o registro de atividades e as notificações têm rotas próprias; aqui vai o painel de situação
+        const { atividades, notificacoes, proxAtiv, proxNotif, ...base } = b;
+        return responderJSON(res, 200, { ...base, painel: calcularPainel(b) });
+      }
       const logadoAluno = !!alunoDaSessao(req); // quem não está logado não recebe nomes de alunos
       const pendentes = b.pedidos.filter(p => p.status === "pendente" || p.status === "liberado").map(p => ({
         itemId: p.itemId,
@@ -378,17 +483,21 @@ async function api(req, res, rota) {
         return responderJSON(res, 429, { erro: "Muitas tentativas. Aguarde 15 minutos e tente de novo." });
       }
       const c = await lerCorpo(req);
-      if (!senhaConfere(c.senha)) {
+      const conta = texto(c.usuario, 30).toLowerCase() || CONTA_PADRAO; // sem usuário = conta padrão (como era antes)
+      const senhaDaConta = CONTAS.get(conta);
+      // compara sempre (mesmo com usuário inexistente) para não vazar pelo tempo de resposta quais usuários existem
+      const confere = senhaConfere(c.senha, senhaDaConta === undefined ? SENHA : senhaDaConta);
+      if (!confere || senhaDaConta === undefined) {
         limiteLogin.registrar(ip); // só erros contam
-        registrarSeguranca("login_falhou", ip);
-        return responderJSON(res, 401, { erro: "Senha incorreta." });
+        registrarSeguranca("login_falhou", ip, "conta=" + conta);
+        return responderJSON(res, 401, { erro: c.usuario ? "Usuário ou senha incorretos." : "Senha incorreta." });
       }
       limiteLogin.zerar(ip);
-      registrarSeguranca("login_ok", ip);
+      registrarSeguranca("login_ok", ip, "conta=" + conta);
       const token = crypto.randomBytes(24).toString("hex");
       while (sessoes.size >= MAX_SESSOES) sessoes.delete(sessoes.keys().next().value); // descarta a mais antiga
-      sessoes.set(token, Date.now() + VALIDADE_SESSAO);
-      return responderJSON(res, 200, { token });
+      sessoes.set(token, { expira: Date.now() + VALIDADE_SESSAO, conta });
+      return responderJSON(res, 200, { token, conta });
     }
 
     // POST /api/logout
@@ -430,6 +539,21 @@ async function api(req, res, rota) {
       return responderJSON(res, 200, pedidos);
     }
 
+    // GET /api/aluno/notificacoes -> avisos do aluno da sessão (?resumo=1 só devolve os contadores)
+    if (req.method === "GET" && rota === "/api/aluno/notificacoes") {
+      const aluno = alunoDaSessao(req);
+      if (!aluno) return responderJSON(res, 401, { erro: "Entre com o seu RA para ver as notificações." });
+      return responderNotificacoes(req, res, lerBanco(), aluno.id);
+    }
+
+    if (req.method === "POST" && rota === "/api/aluno/notificacoes/lidas") {
+      const aluno = alunoDaSessao(req);
+      if (!aluno) return responderJSON(res, 401, { erro: "Entre com o seu RA para ver as notificações." });
+      const b = lerBanco();
+      if (marcarLidas(b, aluno.id)) gravarBanco(b);
+      return responderJSON(res, 200, { ok: true });
+    }
+
     if (req.method === "POST" && rota === "/api/logout") {
       const auth = req.headers["authorization"] || "";
       sessoes.delete(auth.startsWith("Bearer ") ? auth.slice(7) : "");
@@ -453,10 +577,12 @@ async function api(req, res, rota) {
       }
       const detalhe = texto(c.detalhe, 300);
       if (!detalhe) return responderJSON(res, 400, { erro: "Preencha todos os campos." });
-      b.pedidos.push({ // nome, turma e RA vêm da sessão do aluno, não do navegador
+      const pedido = { // nome, turma e RA vêm da sessão do aluno, não do navegador
         id: b.prox++, itemId: item.id, nome: aluno.nome, turma: aluno.turma, detalhe,
         alunoId: aluno.id, alunoRa: aluno.codigo, criadoEm: new Date().toISOString(), status: "pendente"
-      });
+      };
+      b.pedidos.push(pedido);
+      notificar(b, PARA_COORDENACAO, "novo_pedido", "Novo pedido de retirada: " + aluno.nome + " (" + aluno.turma + ") pediu \"" + item.nome + "\".", { pedidoId: pedido.id, itemId: item.id });
       gravarBanco(b);
       return responderJSON(res, 201, { ok: true });
     }
@@ -478,6 +604,8 @@ async function api(req, res, rota) {
       p.status = "liberado";
       p.liberadoEm = new Date().toISOString();
       item.status = "retirada_liberada";
+      registrarAtividade(b, contaDaSessao(req), "liberar", "Liberou a retirada de \"" + item.nome + "\" para " + p.nome + " (" + p.turma + ")", { itemId: item.id, pedidoId: p.id });
+      notificar(b, alunoIdDoPedido(p), "pedido_liberado", "Sua retirada de \"" + item.nome + "\" foi liberada. Procure a coordenação para buscar o item.", { pedidoId: p.id, itemId: item.id });
       gravarBanco(b);
       return responderJSON(res, 200, { ok: true });
     }
@@ -504,6 +632,7 @@ async function api(req, res, rota) {
         item.foto = caminho;
       }
       b.itens.unshift(item);
+      registrarAtividade(b, contaDaSessao(req), "cadastrar_item", "Cadastrou o item \"" + item.nome + "\" (" + item.cat + ", " + item.local + ")", { itemId: item.id });
       gravarBanco(b);
       return responderJSON(res, 201, { ok: true, id: item.id });
     }
@@ -515,16 +644,21 @@ async function api(req, res, rota) {
       const p = b.pedidos.find(x => x.id === Number(m[1]));
       if (!p) return responderJSON(res, 404, { erro: "Pedido não encontrado." });
       let itemDevolvido = null;
+      const conta = contaDaSessao(req);
       if (m[2] === "confirmar") {
         if (p.status !== "liberado") return responderJSON(res, 409, { erro: "Libere a retirada antes de confirmar a entrega." });
         p.status = "entregue";
         const item = b.itens.find(i => i.id === p.itemId);
         if (item) { item.status = "devolvido"; item.devolvidoEm = new Date().toISOString(); itemDevolvido = { foto: item.foto }; delete item.foto; }
+        registrarAtividade(b, conta, "confirmar", "Confirmou a entrega de \"" + nomeDoItem(item) + "\" para " + p.nome + " (" + p.turma + ")", { itemId: p.itemId, pedidoId: p.id });
+        notificar(b, alunoIdDoPedido(p), "pedido_entregue", "A entrega de \"" + nomeDoItem(item) + "\" foi confirmada pela coordenação.", { pedidoId: p.id, itemId: p.itemId });
       } else {
         if (p.status !== "pendente" && p.status !== "liberado") return responderJSON(res, 409, { erro: "Este pedido já foi encerrado." });
         p.status = "recusado";
         const item = b.itens.find(i => i.id === p.itemId);
         if (item && item.status === "retirada_liberada") item.status = "disponivel";
+        registrarAtividade(b, conta, "recusar", "Recusou o pedido de " + p.nome + " (" + p.turma + ") para \"" + nomeDoItem(item) + "\"", { itemId: p.itemId, pedidoId: p.id });
+        notificar(b, alunoIdDoPedido(p), "pedido_recusado", "Seu pedido de \"" + nomeDoItem(item) + "\" foi recusado pela coordenação.", { pedidoId: p.id, itemId: p.itemId });
       }
       gravarBanco(b);                 // 1º grava o banco...
       apagarFotoDoItem(itemDevolvido); // 2º apaga o arquivo (item devolvido não precisa mais da foto)
@@ -538,12 +672,18 @@ async function api(req, res, rota) {
       const item = b.itens.find(i => i.id === Number(m[1]));
       if (!item) return responderJSON(res, 404, { erro: "Item não encontrado." });
       const fotoAntiga = { foto: item.foto };
+      let encerrados = 0;
       for (const p of b.pedidos) { // pedido aberto de um item já devolvido não pode ficar pendurado
-        if (p.itemId === item.id && (p.status === "pendente" || p.status === "liberado")) p.status = "recusado";
+        if (p.itemId === item.id && (p.status === "pendente" || p.status === "liberado")) {
+          p.status = "recusado";
+          encerrados++;
+          notificar(b, alunoIdDoPedido(p), "pedido_encerrado", "O item \"" + item.nome + "\" foi marcado como devolvido e o seu pedido foi encerrado.", { pedidoId: p.id, itemId: item.id });
+        }
       }
       item.status = "devolvido";
       item.devolvidoEm = new Date().toISOString();
       delete item.foto;
+      registrarAtividade(b, contaDaSessao(req), "devolver", "Marcou \"" + item.nome + "\" como devolvido" + (encerrados ? " e encerrou " + encerrados + (encerrados === 1 ? " pedido em aberto" : " pedidos em aberto") : ""), { itemId: item.id });
       gravarBanco(b);
       apagarFotoDoItem(fotoAntiga);
       return responderJSON(res, 200, { ok: true });
@@ -551,10 +691,35 @@ async function api(req, res, rota) {
 
     // POST /api/resetar  -> apaga tudo (itens, pedidos e fotos) e volta aos exemplos
     if (req.method === "POST" && rota === "/api/resetar") {
-      registrarSeguranca("reset_executado", ipDe(req), "itens, pedidos e fotos apagados");
+      const conta = contaDaSessao(req);
+      registrarSeguranca("reset_executado", ipDe(req), "conta=" + conta + " itens, pedidos e fotos apagados");
       apagarFotos();
-      gravarBanco(exemplos());
+      const novo = exemplos();
+      // o registro de atividades NÃO é apagado no reset: ele guarda justamente quem fez o reset
+      let antigo = null;
+      try { antigo = lerBanco(); } catch (e) { /* banco ilegível: recomeça sem o histórico */ }
+      if (antigo) { novo.atividades = antigo.atividades; novo.proxAtiv = antigo.proxAtiv; novo.proxNotif = antigo.proxNotif; }
+      registrarAtividade(novo, conta, "resetar", "Resetou os dados: apagou itens, pedidos e fotos e voltou aos itens de exemplo");
+      gravarBanco(novo);
       return responderJSON(res, 200, { ok: true });
+    }
+
+    // GET /api/notificacoes -> avisos da coordenação (?resumo=1 só devolve os contadores)
+    if (req.method === "GET" && rota === "/api/notificacoes") {
+      return responderNotificacoes(req, res, lerBanco(), PARA_COORDENACAO);
+    }
+
+    if (req.method === "POST" && rota === "/api/notificacoes/lidas") {
+      const b = lerBanco();
+      if (marcarLidas(b, PARA_COORDENACAO)) gravarBanco(b);
+      return responderJSON(res, 200, { ok: true });
+    }
+
+    // GET /api/atividades?limite=50 -> registro de ações da coordenação (mais recentes primeiro)
+    if (req.method === "GET" && rota === "/api/atividades") {
+      const b = lerBanco();
+      const limite = Math.min(500, Math.max(1, Math.floor(Number(new URL(req.url, "http://localhost").searchParams.get("limite"))) || 50));
+      return responderJSON(res, 200, { total: b.atividades.length, atividades: b.atividades.slice(-limite).reverse() });
     }
 
     return responderJSON(res, 404, { erro: "Rota não encontrada." });
@@ -601,10 +766,11 @@ function cabecalhosSeguranca(res) {
 /* ---------- Arquivos estáticos ---------- */
 
 // Só estes arquivos do site são públicos. banco.json e o server.js nunca são servidos.
-const PUBLICOS = new Set(["/index.html", "/style.css", "/script.js", "/logo.png"]);
+// A interface é o app.html. O index.html do repositório é só o redirecionamento do GitHub Pages para esta hospedagem.
+const PUBLICOS = new Set(["/index.html", "/app.html", "/style.css", "/script.js", "/logo.png"]);
 
 function estatico(req, res, rota) {
-  if (rota === "/") rota = "/index.html";
+  if (rota === "/") rota = "/app.html";
   let arquivo = null;
 
   if (PUBLICOS.has(rota)) {
