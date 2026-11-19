@@ -42,8 +42,12 @@ async function api(metodo,url,corpo){
  if(!r.ok)throw new Error(j.erro||"Erro ao falar com o servidor.");
  return j}
 async function carregar(){
- try{db=await api("GET","/api/dados");ultimaAtualizacao=new Date();return true}
+ try{db=await api("GET","/api/dados");ultimaAtualizacao=new Date();if(tokenCoord&&S.logado)await carregarExtrasCoord();return true}
  catch(e){toast(e.message);return false}}
+/* Registro de atividades da coordenação (só carrega com a coordenação logada) */
+async function carregarExtrasCoord(){
+ try{const a=await api("GET","/api/atividades?limite="+atividades.limite);atividades.lista=a.atividades;atividades.total=a.total}
+ catch(e){if(!tokenCoord)toast(e.message)} /* sem token = a sessão acabou de expirar */}
 let tokenAluno=null; // só na memória: fechar ou recarregar a página pede o RA de novo
 let alunoLogado=null;
 let listaAlunos=[]; // lista de demonstração, só carregada para a coordenação
@@ -53,6 +57,46 @@ let S={view:tokenCoord?"coord":"loginAluno",q:"",cat:"",local:"",ano:0,ordem:"re
 let ultimaAtualizacao=null;
 let fotoPend=null;
 const VISITA_KEY="achados-ultima-visita-v1";
+/* Notificações (sino), conta da coordenação e registro de atividades */
+let contaCoord=null;
+try{contaCoord=sessionStorage.getItem("achados-conta")}catch(e){}
+let notif={lista:[],naoLidas:0,ultimoId:0,carregou:false};
+let atividades={lista:[],total:0,limite:50};
+const ICONES_ATIVIDADE={cadastrar_item:"➕",liberar:"✅",confirmar:"📦",recusar:"✖️",devolver:"↩️",resetar:"⚠️"};
+const dataHora=iso=>iso?new Date(iso).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}):"";
+/* Qual caixa de avisos vale agora: a da coordenação (painel) ou a do aluno logado */
+const rotaNotif=()=>S.logado&&S.view==="coord"?"/api/notificacoes":S.aluno&&S.view!=="loginAluno"&&S.view!=="coord"?"/api/aluno/notificacoes":null;
+const zerarNotif=()=>{notif={lista:[],naoLidas:0,ultimoId:0,carregou:false}};
+function notifBox(){
+ if(!rotaNotif())return "";
+ const n=notif.naoLidas;
+ return `<button class="notif-btn" id="notifBtn" type="button" title="Notificações" aria-label="Notificações${n?`: ${n} ${n===1?"não lida":"não lidas"}`:""}"><span aria-hidden="true">🔔</span>${n?`<b class="notif-count" aria-hidden="true">${n>99?"99+":n}</b>`:""}</button>`;
+}
+function atualizarSino(){const nb=$("#notifBox");if(nb)nb.innerHTML=notifBox()}
+/* Checagem leve (só os contadores). Só atualiza o sino e avisa por toast: não redesenha a tela,
+   para não apagar o que a coordenação estiver digitando. */
+async function verificarNotificacoes(){
+ const rota=rotaNotif();if(!rota)return;
+ try{
+  const d=await api("GET",rota+"?resumo=1");
+  const chegou=notif.carregou&&d.ultimoId>notif.ultimoId&&d.naoLidas>0;
+  notif.naoLidas=d.naoLidas;notif.ultimoId=d.ultimoId;notif.carregou=true;
+  atualizarSino();
+  if(chegou)toast("🔔 Você tem uma nova notificação.");
+ }catch(e){}
+}
+async function abrirNotificacoes(){
+ const rota=rotaNotif();if(!rota)return;
+ try{
+  const d=await api("GET",rota);
+  notif.lista=d.notificacoes;notif.naoLidas=d.naoLidas;notif.ultimoId=d.ultimoId;notif.carregou=true;
+  $("#notifLista").innerHTML=notif.lista.length?notif.lista.map(n=>`<div class="li notif${n.lida?"":" nova"}"><div class="info"><strong>${esc(n.texto)}</strong><br><span class="meta">${dataHora(n.em)}</span></div>${n.lida?"":'<span class="status">Nova</span>'}</div>`).join(""):'<div class="empty">Nenhuma notificação por enquanto.</div>';
+  $("#notifAtualizar").hidden=!S.logado;
+  $("#dlgNotif").showModal();
+  if(d.naoLidas){ /* abriu = leu: a lista continua mostrando o que era novo, mas o sino zera */
+   await api("POST",rota+"/lidas");notif.naoLidas=0;atualizarSino()}
+ }catch(e){toast(e.message)}
+}
 async function carregarPedidosAluno(){
  if(!S.aluno){S.meusPedidos=[];return}
  S.carregandoPedidos=true;
@@ -137,14 +181,27 @@ function pedidosView(){
  return `<section class="hero"><h1>Meus pedidos</h1><p class="lead">${esc(S.aluno.nome)} · ${esc(S.aluno.turma)}</p></section><section class="panel"><div class="section-head"><h2>Pedidos enviados</h2><small>Filtrados pelo RA da conta</small></div>${resumoPedidosAluno()}<p class="hint">Os pedidos são salvos no banco local e vinculados ao seu RA.</p></section><button class="btn alt" id="voltarItens">← Voltar aos itens</button>`;
 }
 
+/* Visão geral da coordenação: os números vêm do servidor (db.painel), calculados dos mesmos itens e pedidos da tela.
+   Cada item entra em uma só faixa: cadastrados = devolvidos + aguardando retirada + novas solicitações. */
+function painelSituacao(){
+ const p=db.painel;if(!p)return "";
+ const card=(rot,v,leg,href,destaque)=>{const miolo=`<span>${rot}</span><b>${v}</b><small>${leg}</small>`;return href?`<a class="stat${destaque?" destaque":""}" href="${href}">${miolo}</a>`:`<div class="stat">${miolo}</div>`};
+ return `<section class="overview" aria-label="Visão geral"><div class="section-head"><h2>Visão geral — Achados do Lourdes</h2><small>${ultimaAtualizacao?`Atualizado às ${ultimaAtualizacao.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`:""}</small></div>
+ <div class="stats">${card("Objetos cadastrados",p.cadastrados,"no total, de todos os status")}${card("Devolvidos",p.devolvidos,"entregues aos donos")}${card("Aguardando retirada",p.aguardandoRetirada,`${p.detalhe.semDono} sem dono · ${p.detalhe.retiradaLiberada} com retirada liberada`,"#lista")}${card("Novas solicitações",p.novasSolicitacoes,"pedidos aguardando análise","#pedidos",p.novasSolicitacoes>0)}</div></section>`;
+}
+function atividadesSecao(){
+ const l=atividades.lista;
+ return `<section class="panel" id="atividades"><div class="section-head"><h2>Registro de atividades</h2><small>${atividades.total?`Últimas ${l.length} de ${atividades.total}`:"Ações da coordenação"}</small></div>
+ ${l.length?`<div class="list">${l.map(a=>`<div class="li"><div class="info"><strong><span aria-hidden="true">${ICONES_ATIVIDADE[a.acao]||"•"}</span> ${esc(a.descricao)}</strong><br><span class="meta">${dataHora(a.em)} · conta <b>${esc(a.conta)}</b></span></div></div>`).join("")}</div>${l.length<atividades.total&&atividades.limite<500?`<button class="btn alt sm" id="maisAtividades" type="button">Ver mais</button>`:""}`:`<div class="empty">Nenhuma atividade registrada ainda.</div>`}</section>`;
+}
 function coord(){
  if(!S.logado)return `<h1 class="center">Área da coordenação</h1><p class="lead center">Entre para cadastrar itens e responder aos pedidos de retirada.</p>
- <div class="panel narrow"><form id="login"><label>Senha<input type="password" name="senha" required autocomplete="current-password"></label>
+ <div class="panel narrow"><form id="login"><label>Usuário <small>(opcional)</small><input name="usuario" maxlength="30" autocomplete="username" placeholder="coordenacao" autocapitalize="none" spellcheck="false"></label><label>Senha<input type="password" name="senha" required autocomplete="current-password"></label>
  <button class="btn" type="submit">Entrar</button><p class="hint">Acesso restrito à coordenação da escola.</p><button class="btn alt role-switch" type="button" id="goAluno">Sou aluno</button></form></div>`;
  const pend=db.pedidos.filter(p=>p.status==="pendente"||p.status==="liberado");
  const disp=db.itens.filter(i=>i.status==="disponivel");
- return `<section class="hero bar"><div><h1>Painel da coordenação</h1><p class="lead">Cadastre itens e responda aos pedidos de retirada.</p></div><button class="btn alt" id="sair">Sair</button></section>${stats()}
- <div class="coord-nav"><a href="#pedidos">Pedidos</a><a href="#cadastro">Cadastrar item</a><a href="#lista">Itens cadastrados</a><a href="#alunos">Alunos</a><a href="#manutencao">Manutenção</a></div><section class="panel" id="pedidos"><div class="section-head"><h2>Pedidos de retirada (${pend.length})</h2><small>Analise os pedidos recebidos</small></div>
+ return `<section class="hero bar"><div><h1>Painel da coordenação</h1><p class="lead">Cadastre itens e responda aos pedidos de retirada.</p>${contaCoord?`<p class="hint conta-logada">Conta: <b>${esc(contaCoord)}</b></p>`:""}</div><button class="btn alt" id="sair">Sair</button></section>${painelSituacao()}
+ <div class="coord-nav"><a href="#pedidos">Pedidos</a><a href="#cadastro">Cadastrar item</a><a href="#lista">Itens cadastrados</a><a href="#atividades">Atividades</a><a href="#alunos">Alunos</a><a href="#manutencao">Manutenção</a></div><section class="panel" id="pedidos"><div class="section-head"><h2>Pedidos de retirada (${pend.length})</h2><small>Analise os pedidos recebidos</small></div>
  ${pend.length?`<div class="list">${pend.map(p=>{const i=db.itens.find(x=>x.id===p.itemId);const liberado=p.status==="liberado";return `<div class="li"><div class="info"><strong>${esc(i.nome)}</strong><br>${esc(p.nome)}, ${esc(p.turma)}<br><span class="meta">Detalhe informado: ${esc(p.detalhe)}</span></div><div class="acts"><button class="btn alt" data-liberar="${p.id}" ${liberado?"disabled":""}>${liberado?"Retirada liberada":"Liberar retirada"}</button><button class="btn ok" data-ok="${p.id}" ${liberado?"":"disabled"}>Confirmar entrega</button><button class="btn bad" data-no="${p.id}">Recusar</button></div></div>`}).join("")}</div>`:`<div class="empty">Nenhum pedido pendente.</div>`}</section>
  <section class="panel" id="cadastro"><div class="section-head"><h2>Cadastrar item achado</h2><small>O item aparece imediatamente na lista pública</small></div><form id="novo">
  <div class="row2"><label>Nome do item<input name="nome" required maxlength="50"></label>
@@ -158,6 +215,7 @@ function coord(){
   <div class="foto-prev" id="fotoPrev" ${fotoPend?"":"hidden"}><img id="fotoImg" alt="Pré-visualização da foto" src="${fotoPend||""}"><button type="button" class="btn alt sm" id="fotoRem">Remover foto</button></div></div>
  <button class="btn" type="submit">Cadastrar item</button></form></section>
  <section class="panel" id="lista"><div class="section-head"><h2>Itens na lista (${disp.length})</h2><small>Itens ainda disponíveis</small></div>${disp.length?`<div class="list">${disp.map(i=>`<div class="li"><div class="info withthumb">${i.foto?`<img class="thumb" src="${i.foto}" alt="Foto: ${esc(i.nome)}" data-zoom="${i.id}" loading="lazy">`:`<span class="thumb ph" aria-hidden="true">${CATS[i.cat]}</span>`}<div><strong>${esc(i.nome)}</strong><br><span class="meta">${CATS[i.cat]} ${esc(i.cat)} · ${esc(i.local)} · ${fmt(i.data)}</span></div></div><div class="acts"><button class="btn alt" data-dev="${i.id}">Marcar como devolvido</button></div></div>`).join("")}</div>`:`<div class="empty">Nenhum item na lista. Cadastre o primeiro acima.</div>`}</section>
+ ${atividadesSecao()}
  <section class="panel" id="alunos"><div class="section-head"><h2>Banco de alunos (${alunosAno(S.ano).length})</h2><small>Lista de demonstração, visível só para a coordenação</small></div>
  <div class="chips" role="group" aria-label="Filtrar por ano">${[0,1,2,3].map(a=>`<button class="chip" data-ano="${a}" aria-pressed="${S.ano===a}">${a?a+"º ano":"Todos"} (${alunosAno(a).length})</button>`).join("")}</div>
  <div class="list">${alunosAno(S.ano).map(a=>`<div class="li"><div class="info withthumb"><span class="avatar" aria-hidden="true">${iniciais(a.nome)}</span><div><strong>${esc(a.nome)}</strong><br><span class="meta">${a.ano}º ano · turma ${esc(a.turma)}</span></div></div><span class="codigo" title="Código de login">${a.codigo}</span></div>`).join("")}</div></section>
@@ -175,6 +233,7 @@ function loginAlunoView(){return `<section class="login-screen"><h1>Aluno</h1><f
 function render(){
  $("#app").innerHTML=S.view==="loginAluno"?loginAlunoView():S.view==="publico"?publico():S.view==="ajuda"?ajuda():S.view==="pedidos"?pedidosView():coord();
  $("#alunoBox").innerHTML=alunoBox();
+ atualizarSino();
  document.querySelector("nav").hidden=S.view==="loginAluno"||S.view==="coord";
  document.querySelector('nav button[data-view="coord"]').hidden=!!S.aluno;
  document.querySelectorAll("nav button").forEach(b=>{if(b.dataset.view===S.view)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
@@ -185,8 +244,13 @@ document.addEventListener("click",async e=>{
  const z=e.target.closest("[data-zoom]");
  if(z){const i=db.itens.find(x=>x.id===+z.dataset.zoom);if(i&&i.foto){$("#fotoGrande").src=i.foto;$("#fotoGrande").alt="Foto: "+i.nome;$("#fotoLegenda").textContent=i.nome+" · "+i.local;$("#dlgFoto").showModal()}return}
  if(e.target===$("#dlgFoto")){$("#dlgFoto").close();return}
+ if(e.target===$("#dlgNotif")){$("#dlgNotif").close();return}
  const t=e.target.closest("button");if(!t)return;
  if(t.id==="themeToggle"){proximoTema();return}
+ if(t.id==="notifBtn"){await abrirNotificacoes();return}
+ if(t.id==="fecharNotif"){$("#dlgNotif").close();return}
+ if(t.id==="notifAtualizar"){$("#dlgNotif").close();await carregar();render();toast("Painel atualizado.");return}
+ if(t.id==="maisAtividades"){atividades.limite=Math.min(500,atividades.limite+50);await carregarExtrasCoord();render();return}
  if(t.id==="goCoord"){S.view="coord";render();return}
  if(t.id==="goAluno"){S.view="loginAluno";render();return}
  if(t.id==="alunoPedidos"||t.id==="verPedidos"){S.view="pedidos";await carregarPedidosAluno();render();return}
@@ -210,13 +274,13 @@ document.addEventListener("click",async e=>{
  if(t.dataset.ok){try{await api("POST","/api/pedidos/"+t.dataset.ok+"/confirmar");await carregar();render();toast("Entrega confirmada. O item saiu da lista.")}catch(er){toast(er.message)}return}
  if(t.dataset.no){try{await api("POST","/api/pedidos/"+t.dataset.no+"/recusar");await carregar();render();toast("Pedido recusado. O item voltou a ficar disponível.")}catch(er){toast(er.message)}return}
  if(t.dataset.dev){try{await api("POST","/api/itens/"+t.dataset.dev+"/devolver");await carregar();render();toast("Item marcado como devolvido.")}catch(er){toast(er.message)}return}
- if(t.id==="sair"){try{await api("POST","/api/logout")}catch(er){}tokenCoord=null;S.logado=false;listaAlunos=[];try{sessionStorage.removeItem("achados-token")}catch(er){}await carregar();render();return}
+ if(t.id==="sair"){try{await api("POST","/api/logout")}catch(er){}tokenCoord=null;S.logado=false;listaAlunos=[];contaCoord=null;atividades={lista:[],total:0,limite:50};zerarNotif();try{sessionStorage.removeItem("achados-token");sessionStorage.removeItem("achados-conta")}catch(er){}await carregar();render();return}
  if(t.id==="reset"){
   if(!confirm("Tem certeza? Isso apaga TODOS os itens, pedidos e fotos e volta para os itens de exemplo."))return;
   try{await api("POST","/api/resetar");fotoPend=null;await carregar();render();toast("Todos os itens foram resetados.")}catch(er){toast(er.message)}return}
  if(t.id==="cancelClaim")$("#dlg").close();
  if(t.id==="alunoEntrar"){S.view="loginAluno";render();return}
- if(t.id==="alunoSair"){try{await api("POST","/api/aluno/logout")}catch(er){}tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];S.view="loginAluno";render();toast("Login do aluno encerrado.")}
+ if(t.id==="alunoSair"){try{await api("POST","/api/aluno/logout")}catch(er){}tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];zerarNotif();S.view="loginAluno";render();toast("Login do aluno encerrado.")}
 });
 document.addEventListener("input",e=>{
  if(e.target.id==="q"){S.q=e.target.value;const pos=e.target.selectionStart;render();const q=$("#q");q.focus();q.setSelectionRange(pos,pos)}
@@ -240,11 +304,11 @@ document.addEventListener("submit",async e=>{
    if(!S.aluno||!db.itens.some(x=>x.id===S.alvo&&x.status==="disponivel"))$("#dlg").close();
    render()}}
  if(f.id==="login"){e.preventDefault();
-  try{const r=await api("POST","/api/login",{senha:new FormData(f).get("senha")});tokenCoord=r.token;try{sessionStorage.setItem("achados-token",tokenCoord)}catch(er){}S.logado=true;await carregar();await carregarAlunos();render()}
+  try{const d=new FormData(f);const r=await api("POST","/api/login",{usuario:String(d.get("usuario")||"").trim(),senha:d.get("senha")});tokenCoord=r.token;contaCoord=r.conta||null;zerarNotif();try{sessionStorage.setItem("achados-token",tokenCoord);if(contaCoord)sessionStorage.setItem("achados-conta",contaCoord)}catch(er){}S.logado=true;await carregar();await carregarAlunos();render();verificarNotificacoes()}
   catch(er){toast(er.message)}}
  if(f.id==="alunoForm"){e.preventDefault();const cod=new FormData(f).get("codigo").trim();
   try{const r=await api("POST","/api/aluno/login",{ra:cod});tokenAluno=r.token;S.aluno=r.aluno;alunoLogado=r.aluno;
-   await carregar();await carregarPedidosAluno();S.view="publico";render();toast(`Bem-vindo(a), ${r.aluno.nome.split(" ")[0]}!`)}
+   zerarNotif();await carregar();await carregarPedidosAluno();S.view="publico";render();toast(`Bem-vindo(a), ${r.aluno.nome.split(" ")[0]}!`);verificarNotificacoes()}
   catch(er){toast(er.message)}}
  if(f.id==="novo"){e.preventDefault();const d=Object.fromEntries(new FormData(f));
   const novo={nome:d.nome.trim(),cat:d.cat,local:d.local,data:d.data,desc:d.desc.trim()};
@@ -257,4 +321,8 @@ document.addEventListener("submit",async e=>{
   try{await api("POST","/api/itens",novo);fotoPend=null;f.dataset.confirmado="";await carregar();render();toast("Item cadastrado. Ele já aparece na lista pública.")}
   catch(er){toast(er.message)}}
 });
-carregar().then(async()=>{await carregarAlunos();atualizarTema();render()});
+carregar().then(async()=>{await carregarAlunos();atualizarTema();render();verificarNotificacoes()});
+/* Checa avisos novos com a aba aberta: a cada 30 s na coordenação e a cada 60 s para alunos (a escola pode compartilhar um IP) */
+let tiqueNotif=0;
+setInterval(()=>{tiqueNotif++;if(document.hidden)return;if(S.logado||tiqueNotif%2===0)verificarNotificacoes()},30000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)verificarNotificacoes()});
