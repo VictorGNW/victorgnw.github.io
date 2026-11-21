@@ -489,7 +489,8 @@ function podarPerdidos(b) {
 }
 
 /* Visão do aluno: só os avisos dele */
-const perdidoParaAluno = p => ({ id: p.id, nome: p.nome, cat: p.cat, local: p.local, data: p.data, desc: p.desc, status: p.status, criadoEm: p.criadoEm });
+const perdidoParaAluno = p => ({ id: p.id, nome: p.nome, cat: p.cat, local: p.local, data: p.data, desc: p.desc, status: p.status, criadoEm: p.criadoEm,
+  possivel: !!p.possivelEm, possivelItem: p.possivelItemNome || "" }); // "possivel": a coordenação marcou um possível objeto encontrado
 
 /* ---------- API ---------- */
 
@@ -832,9 +833,38 @@ async function api(req, res, rota) {
       const abertos = b.perdidos.filter(p => p.status === "aberto").reverse().slice(0, 200).map(p => ({
         id: p.id, em: p.criadoEm, nome: p.nome, cat: p.cat, local: p.local, data: p.data, desc: p.desc,
         alunoNome: p.alunoNome, alunoTurma: p.alunoTurma,
+        possivelEm: p.possivelEm || null, possivelItemId: p.possivelItemId || null, possivelItem: p.possivelItemNome || "",
         possiveis: itensPossiveis(b, p, false).slice(0, 3).map(i => ({ id: i.id, nome: i.nome, local: i.local, data: i.data }))
       }));
       return responderJSON(res, 200, { perdidos: abertos });
+    }
+
+    // POST /api/perdidos/:id/possivel -> a coordenação marca que há um possível objeto encontrado e avisa o aluno.
+    // Corpo opcional: { itemId } indica qual item da lista parece ser o objeto. O aviso continua aberto.
+    const rotaPerdidoPossivel = /^\/api\/perdidos\/(\d+)\/possivel$/.exec(rota);
+    if (req.method === "POST" && rotaPerdidoPossivel) {
+      const c = await lerCorpo(req);
+      const b = lerBanco();
+      const aviso = b.perdidos.find(p => p.id === Number(rotaPerdidoPossivel[1]));
+      if (!aviso) return responderJSON(res, 404, { erro: "Aviso não encontrado." });
+      if (aviso.status !== "aberto") return responderJSON(res, 409, { erro: "Este aviso já foi encerrado." });
+      let item = null;
+      if (c.itemId !== undefined && c.itemId !== null && c.itemId !== "") {
+        item = b.itens.find(i => i.id === Number(c.itemId));
+        if (!item || item.status !== "disponivel") return responderJSON(res, 404, { erro: "Item não encontrado ou já indisponível." });
+      }
+      const itemId = item ? item.id : null;
+      if (aviso.possivelEm && (aviso.possivelItemId || null) === itemId) {
+        return responderJSON(res, 409, { erro: "O aluno já foi avisado" + (item ? " sobre este item." : ".") });
+      }
+      const conta = contaDaSessao(req);
+      aviso.possivelEm = new Date().toISOString();
+      aviso.possivelItemId = itemId;
+      aviso.possivelItemNome = item ? item.nome : "";
+      registrarAtividade(b, conta, "possivel_encontrado", "Marcou possível objeto encontrado para o aviso \"" + aviso.nome + "\" de " + aviso.alunoNome + " (" + aviso.alunoTurma + ")" + (item ? ": \"" + item.nome + "\"" : ""), { perdidoId: aviso.id, ...(item ? { itemId: item.id } : {}) });
+      notificar(b, aviso.alunoId, "possivel_encontrado", "A coordenação encontrou um possível objeto para o seu aviso \"" + aviso.nome + "\"" + (item ? ": \"" + item.nome + "\"" : "") + ". Procure a coordenação para conferir se é seu.", { perdidoId: aviso.id, ...(item ? { itemId: item.id } : {}) });
+      gravarBanco(b);
+      return responderJSON(res, 200, { ok: true });
     }
 
     // POST /api/perdidos/:id/encerrar -> a coordenação encerra o aviso (objeto encontrado ou aviso antigo)
