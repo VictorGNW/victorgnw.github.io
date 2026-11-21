@@ -65,7 +65,7 @@ try{contaCoord=sessionStorage.getItem("achados-conta")}catch(e){}
 let notif={lista:[],naoLidas:0,ultimoId:0,carregou:false};
 let atividades={lista:[],total:0,limite:50};
 let perdidos={lista:[]}; /* avisos de "perdi um objeto" abertos (painel da coordenação) */
-const ICONES_ATIVIDADE={cadastrar_item:"➕",liberar:"✅",confirmar:"📦",recusar:"✖️",devolver:"↩️",resetar:"⚠️",encerrar_perdido:"🔎"};
+const ICONES_ATIVIDADE={cadastrar_item:"➕",liberar:"✅",confirmar:"📦",recusar:"✖️",devolver:"↩️",resetar:"⚠️",encerrar_perdido:"🔎",possivel_encontrado:"🔔"};
 const dataHora=iso=>iso?new Date(iso).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}):"";
 /* Qual caixa de avisos vale agora: a da coordenação (painel) ou a do aluno logado */
 const rotaNotif=()=>S.logado&&S.view==="coord"?"/api/notificacoes":S.aluno&&S.view!=="loginAluno"&&S.view!=="coord"?"/api/aluno/notificacoes":null;
@@ -119,7 +119,7 @@ async function carregarPedidosAluno(){
 function perdidosAluno(){
  if(!S.aluno)return "";
  const l=S.meusPerdidos||[];
- return `<section class="panel" id="meusPerdidos"><div class="section-head"><h2>Objetos que perdi</h2><small>Avisos enviados por você</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)}</span><br><span class="meta">${esc(p.desc)}</span></div><div class="acts"><span class="status ${p.status==="aberto"?"":"delivered"}">${p.status==="aberto"?"Procurando":"Encerrado"}</span>${p.status==="aberto"?`<button class="btn alt sm" data-perdido-fim="${p.id}" type="button">Já encontrei</button>`:""}</div></div>`).join("")}</div>`:'<div class="empty">Você ainda não avisou nenhum objeto perdido.</div>'}<button class="btn mt" data-perdi type="button">Perdi um objeto</button></section>`;
+ return `<section class="panel" id="meusPerdidos"><div class="section-head"><h2>Objetos que perdi</h2><small>Avisos enviados por você</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)}</span><br><span class="meta">${esc(p.desc)}</span>${p.status==="aberto"&&p.possivel?`<br><span class="meta possivel-aviso">🔎 A coordenação encontrou um possível objeto${p.possivelItem?": "+esc(p.possivelItem):""}. Procure a coordenação para conferir.</span>`:""}</div><div class="acts"><span class="status ${p.status!=="aberto"?"delivered":p.possivel?"found":""}">${p.status!=="aberto"?"Encerrado":p.possivel?"Possível objeto encontrado":"Procurando"}</span>${p.status==="aberto"?`<button class="btn alt sm" data-perdido-fim="${p.id}" type="button">Já encontrei</button>`:""}</div></div>`).join("")}</div>`:'<div class="empty">Você ainda não avisou nenhum objeto perdido.</div>'}<button class="btn mt" data-perdi type="button">Perdi um objeto</button></section>`;
 }
 const hojeLocal=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)};
 function abrirPerdi(){
@@ -218,7 +218,7 @@ function painelSituacao(){
 /* Avisos de "perdi um objeto" abertos, com os itens achados que podem ser o mesmo objeto */
 function perdidosSecao(){
  const l=perdidos.lista;
- return `<section class="panel" id="perdidos"><div class="section-head"><h2>Objetos perdidos (${l.length})</h2><small>Avisos dos alunos que ainda procuram</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br>${esc(p.alunoNome)}, ${esc(p.alunoTurma)}<br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)} · avisado ${quando(p.em.slice(0,10))}</span><br><span class="meta">${esc(p.desc)}</span>${p.possiveis.length?`<br><span class="meta">🔎 Possíveis itens achados: ${p.possiveis.map(i=>esc(i.nome)+" ("+esc(i.local)+")").join("; ")}</span>`:""}</div><div class="acts"><button class="btn alt" data-perdido-enc="${p.id}" type="button">Encerrar aviso</button></div></div>`).join("")}</div>`:`<div class="empty">Nenhum aviso de objeto perdido.</div>`}</section>`;
+ return `<section class="panel" id="perdidos"><div class="section-head"><h2>Objetos perdidos (${l.length})</h2><small>Avisos dos alunos que ainda procuram</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br>${esc(p.alunoNome)}, ${esc(p.alunoTurma)}<br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)} · avisado ${quando(p.em.slice(0,10))}</span><br><span class="meta">${esc(p.desc)}</span>${p.possiveis.length?`<br><span class="meta">🔎 Possíveis itens achados: ${p.possiveis.map(i=>esc(i.nome)+" ("+esc(i.local)+")").join("; ")}</span>`:""}${p.possivelEm?`<br><span class="meta possivel-aviso">✅ Aluno avisado ${dataHora(p.possivelEm)}${p.possivelItem?" sobre: "+esc(p.possivelItem):""}</span>`:""}</div><div class="acts">${p.possiveis.filter(i=>!(p.possivelEm&&p.possivelItemId===i.id)).map(i=>`<button class="btn ok sm" data-perdido-possivel="${p.id}" data-item="${i.id}" type="button" title="Avisa o aluno que este item pode ser o dele">É este: ${esc(i.nome)}</button>`).join("")}${p.possivelEm&&!p.possivelItemId?"":`<button class="btn alt" data-perdido-possivel="${p.id}" type="button" title="Avisa o aluno para procurar a coordenação">Possível objeto encontrado</button>`}<button class="btn alt" data-perdido-enc="${p.id}" type="button">Encerrar aviso</button></div></div>`).join("")}</div>`:`<div class="empty">Nenhum aviso de objeto perdido.</div>`}</section>`;
 }
 function atividadesSecao(){
  const l=atividades.lista;
@@ -294,6 +294,10 @@ document.addEventListener("click",async e=>{
  if(t.dataset.perdidoFim){
   if(!confirm("Marcar como encontrado e encerrar este aviso?"))return;
   try{await api("POST","/api/aluno/perdidos/"+t.dataset.perdidoFim+"/encerrar");await carregarPedidosAluno();render();toast("Aviso encerrado.")}catch(er){toast(er.message)}return}
+ if(t.dataset.perdidoPossivel){
+  const corpo=t.dataset.item?{itemId:Number(t.dataset.item)}:{};
+  if(!confirm(t.dataset.item?"Avisar o aluno que este item pode ser o objeto dele?":"Avisar o aluno que há um possível objeto encontrado?"))return;
+  try{await api("POST","/api/perdidos/"+t.dataset.perdidoPossivel+"/possivel",corpo);await carregar();render();toast("Aluno avisado.")}catch(er){toast(er.message)}return}
  if(t.dataset.perdidoEnc){
   if(!confirm("Encerrar este aviso de objeto perdido? O aluno será avisado."))return;
   try{await api("POST","/api/perdidos/"+t.dataset.perdidoEnc+"/encerrar");await carregar();render();toast("Aviso encerrado.")}catch(er){toast(er.message)}return}
