@@ -36,6 +36,21 @@
 <dialog id="dlgFoto" aria-label="Foto do item" class="dlg-foto">
 <img id="fotoGrande" alt=""><p id="fotoLegenda" class="hint"></p>
 <div style="display:flex;justify-content:flex-end"><button type="button" class="btn alt" id="fecharFoto">Fechar</button></div></dialog>
+<dialog id="dlgPerdi" aria-labelledby="perdiT">
+<form id="perdiForm" method="dialog">
+<h2 id="perdiT">Perdi um objeto</h2>
+<p class="hint">Descreva o que você perdeu. A coordenação vai procurar e você recebe uma notificação se um item parecido for cadastrado.</p>
+<label>O que você perdeu?<input name="nome" required maxlength="50" placeholder="Ex.: Garrafa azul"></label>
+<div class="row2"><label>Categoria<select name="cat"></select></label>
+<label>Onde acha que perdeu?<select name="local"></select></label></div>
+<label>Quando perdeu?<input type="date" name="data" required></label>
+<label>Descrição<textarea name="desc" rows="2" required maxlength="140" placeholder="Ex.: térmica, com adesivo de gato na tampa"></textarea></label>
+<p class="hint">Só a coordenação vê o seu nome e a sua turma. O aviso não aparece na lista pública.</p>
+<div class="acts" style="display:flex;gap:8px;justify-content:flex-end">
+<button type="button" class="btn alt" id="cancelPerdi">Cancelar</button>
+<button type="submit" class="btn">Enviar aviso</button>
+</div></form></dialog>
+
 <dialog id="dlgNotif" aria-labelledby="notifTitulo" class="dlg-notif">
 <h2 id="notifTitulo">Notificações</h2>
 <div id="notifLista" class="list"></div>
