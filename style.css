@@ -177,3 +177,8 @@ a.stat{text-decoration:none;color:inherit}
 .empty p{margin:6px 0 0}
 .empty-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0 6px}
 @media (max-width:480px){.hero-cta .btn{width:100%}}
+
+/* --- Possível objeto encontrado --- */
+.status.found{background:var(--teal);color:#fff}
+.possivel-aviso{color:var(--ink);font-weight:600}
+.btn.ok.sm{box-shadow:none}
