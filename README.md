@@ -11,5 +11,7 @@ Aplicação de achados e perdidos da EEEM Nossa Senhora de Lourdes. O mesmo serv
 - Lista pública com busca, filtros, ordenação e fotos opcionais
 - Login de aluno e acompanhamento dos pedidos de retirada
 - Painel da coordenação para cadastrar itens, analisar pedidos e registrar devoluções
+- "Perdi um objeto": o aluno avisa o que perdeu; a coordenação vê o aviso com possíveis itens achados e o aluno é notificado se um item parecido for cadastrado
+- Notificações (sino) para o aluno quando o pedido muda de status e para a coordenação quando chega um pedido ou aviso
 - Interface responsiva, tema claro/escuro e aviso de itens novos
 

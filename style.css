@@ -170,3 +170,10 @@ a.stat{text-decoration:none;color:inherit}
 .conta-logada{margin:6px 0 0}
 #atividades .btn.sm{margin-top:12px}
 @media (max-width:760px){.notif-box{margin-left:auto}.aluno-box{margin-left:0}}
+
+/* --- Perdi um objeto e estado vazio --- */
+.hero-cta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
+.btn.mt{margin-top:12px}
+.empty p{margin:6px 0 0}
+.empty-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0 6px}
+@media (max-width:480px){.hero-cta .btn{width:100%}}

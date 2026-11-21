@@ -38,22 +38,24 @@ async function api(metodo,url,corpo){
  catch(e){throw new Error("Sem conexão com o servidor. Ele está ligado?")}
  let j={};try{j=await r.json()}catch(e){}
  if(r.status===401&&tokenCoord&&url!=="/api/login"){tokenCoord=null;S.logado=false;listaAlunos=[];try{sessionStorage.removeItem("achados-token")}catch(e){}setTimeout(render,0);throw new Error("Sua sessão da coordenação expirou. Entre de novo.")}
- if(r.status===401&&tokenAluno&&!tokenCoord&&url!=="/api/aluno/login"){tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];S.view="loginAluno";setTimeout(render,0);throw new Error("Sua sessão expirou. Entre com o RA de novo.")}
+ if(r.status===401&&tokenAluno&&!tokenCoord&&url!=="/api/aluno/login"){tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];S.meusPerdidos=[];S.view="loginAluno";setTimeout(render,0);throw new Error("Sua sessão expirou. Entre com o RA de novo.")}
  if(!r.ok)throw new Error(j.erro||"Erro ao falar com o servidor.");
  return j}
 async function carregar(){
  try{db=await api("GET","/api/dados");ultimaAtualizacao=new Date();if(tokenCoord&&S.logado)await carregarExtrasCoord();return true}
  catch(e){toast(e.message);return false}}
-/* Registro de atividades da coordenação (só carrega com a coordenação logada) */
+/* Registro de atividades e avisos de objeto perdido (só carregam com a coordenação logada) */
 async function carregarExtrasCoord(){
  try{const a=await api("GET","/api/atividades?limite="+atividades.limite);atividades.lista=a.atividades;atividades.total=a.total}
- catch(e){if(!tokenCoord)toast(e.message)} /* sem token = a sessão acabou de expirar */}
+ catch(e){if(!tokenCoord)toast(e.message)} /* sem token = a sessão acabou de expirar */
+ try{const p=await api("GET","/api/perdidos");perdidos.lista=p.perdidos}
+ catch(e){if(!tokenCoord)toast(e.message)}}
 let tokenAluno=null; // só na memória: fechar ou recarregar a página pede o RA de novo
 let alunoLogado=null;
 let listaAlunos=[]; // lista de demonstração, só carregada para a coordenação
 const alunosAno=a=>a?listaAlunos.filter(x=>x.ano===a):listaAlunos;
 async function carregarAlunos(){if(!S.logado){listaAlunos=[];return}try{listaAlunos=await api("GET","/api/alunos")}catch(e){listaAlunos=[]}}
-let S={view:tokenCoord?"coord":"loginAluno",q:"",cat:"",local:"",ano:0,ordem:"recentes",somenteFoto:false,logado:!!tokenCoord,alvo:null,aluno:alunoLogado,meusPedidos:[],carregandoPedidos:false};
+let S={view:tokenCoord?"coord":"loginAluno",q:"",cat:"",local:"",ano:0,ordem:"recentes",somenteFoto:false,logado:!!tokenCoord,alvo:null,aluno:alunoLogado,meusPedidos:[],meusPerdidos:[],carregandoPedidos:false};
 let ultimaAtualizacao=null;
 let fotoPend=null;
 const VISITA_KEY="achados-ultima-visita-v1";
@@ -62,7 +64,8 @@ let contaCoord=null;
 try{contaCoord=sessionStorage.getItem("achados-conta")}catch(e){}
 let notif={lista:[],naoLidas:0,ultimoId:0,carregou:false};
 let atividades={lista:[],total:0,limite:50};
-const ICONES_ATIVIDADE={cadastrar_item:"➕",liberar:"✅",confirmar:"📦",recusar:"✖️",devolver:"↩️",resetar:"⚠️"};
+let perdidos={lista:[]}; /* avisos de "perdi um objeto" abertos (painel da coordenação) */
+const ICONES_ATIVIDADE={cadastrar_item:"➕",liberar:"✅",confirmar:"📦",recusar:"✖️",devolver:"↩️",resetar:"⚠️",encerrar_perdido:"🔎"};
 const dataHora=iso=>iso?new Date(iso).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}):"";
 /* Qual caixa de avisos vale agora: a da coordenação (painel) ou a do aluno logado */
 const rotaNotif=()=>S.logado&&S.view==="coord"?"/api/notificacoes":S.aluno&&S.view!=="loginAluno"&&S.view!=="coord"?"/api/aluno/notificacoes":null;
@@ -73,8 +76,9 @@ function notifBox(){
  return `<button class="notif-btn" id="notifBtn" type="button" title="Notificações" aria-label="Notificações${n?`: ${n} ${n===1?"não lida":"não lidas"}`:""}"><span aria-hidden="true">🔔</span>${n?`<b class="notif-count" aria-hidden="true">${n>99?"99+":n}</b>`:""}</button>`;
 }
 function atualizarSino(){const nb=$("#notifBox");if(nb)nb.innerHTML=notifBox()}
-/* Checagem leve (só os contadores). Só atualiza o sino e avisa por toast: não redesenha a tela,
-   para não apagar o que a coordenação estiver digitando. */
+/* Checagem leve (só os contadores). Na coordenação só atualiza o sino e avisa por toast: não redesenha a tela,
+   para não apagar o que ela estiver digitando. Para o aluno, o toast mostra o texto do aviso e a lista de
+   itens e de pedidos é atualizada na hora (menos se ele estiver digitando ou com uma janela aberta). */
 async function verificarNotificacoes(){
  const rota=rotaNotif();if(!rota)return;
  try{
@@ -82,9 +86,16 @@ async function verificarNotificacoes(){
   const chegou=notif.carregou&&d.ultimoId>notif.ultimoId&&d.naoLidas>0;
   notif.naoLidas=d.naoLidas;notif.ultimoId=d.ultimoId;notif.carregou=true;
   atualizarSino();
-  if(chegou)toast("🔔 Você tem uma nova notificação.");
+  if(chegou){if(rota==="/api/aluno/notificacoes")await avisoParaAluno();else toast("🔔 Você tem uma nova notificação.")}
  }catch(e){}
 }
+async function avisoParaAluno(){
+ let msg="🔔 Você tem uma nova notificação.";
+ try{const d=await api("GET","/api/aluno/notificacoes");const n=(d.notificacoes||[]).find(x=>!x.lida);if(n)msg="🔔 "+n.texto}catch(e){}
+ const ativo=document.activeElement;
+ const ocupado=(ativo&&(ativo.id==="q"||(ativo.closest&&ativo.closest("dialog"))))||$("#dlg").open||$("#dlgPerdi").open;
+ if(S.aluno&&!ocupado&&(S.view==="publico"||S.view==="pedidos")){await carregar();await carregarPedidosAluno();render()}
+ toast(msg,6000)}
 async function abrirNotificacoes(){
  const rota=rotaNotif();if(!rota)return;
  try{
@@ -98,12 +109,26 @@ async function abrirNotificacoes(){
  }catch(e){toast(e.message)}
 }
 async function carregarPedidosAluno(){
- if(!S.aluno){S.meusPedidos=[];return}
+ if(!S.aluno){S.meusPedidos=[];S.meusPerdidos=[];return}
  S.carregandoPedidos=true;
- try{S.meusPedidos=await api("GET","/api/meus-pedidos")}
- catch(e){S.meusPedidos=[];toast(e.message)}
+ try{[S.meusPedidos,S.meusPerdidos]=await Promise.all([api("GET","/api/meus-pedidos"),api("GET","/api/aluno/perdidos")])}
+ catch(e){S.meusPedidos=[];S.meusPerdidos=[];toast(e.message)}
  finally{S.carregandoPedidos=false}
 }
+/* "Objetos que perdi": avisos que o aluno enviou (aparecem na tela "Meus pedidos") */
+function perdidosAluno(){
+ if(!S.aluno)return "";
+ const l=S.meusPerdidos||[];
+ return `<section class="panel" id="meusPerdidos"><div class="section-head"><h2>Objetos que perdi</h2><small>Avisos enviados por você</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)}</span><br><span class="meta">${esc(p.desc)}</span></div><div class="acts"><span class="status ${p.status==="aberto"?"":"delivered"}">${p.status==="aberto"?"Procurando":"Encerrado"}</span>${p.status==="aberto"?`<button class="btn alt sm" data-perdido-fim="${p.id}" type="button">Já encontrei</button>`:""}</div></div>`).join("")}</div>`:'<div class="empty">Você ainda não avisou nenhum objeto perdido.</div>'}<button class="btn mt" data-perdi type="button">Perdi um objeto</button></section>`;
+}
+const hojeLocal=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)};
+function abrirPerdi(){
+ if(!S.aluno){toast("Entre com o seu RA para avisar um objeto perdido.");S.view="loginAluno";render();return}
+ const f=$("#perdiForm");f.reset();
+ f.elements.cat.innerHTML=Object.keys(CATS).map(c=>`<option>${c}</option>`).join("");
+ f.elements.local.innerHTML='<option value="">Não sei / não lembro</option>'+LOCAIS.map(l=>`<option>${l}</option>`).join("");
+ f.elements.data.value=hojeLocal();f.elements.data.max=hojeLocal();
+ $("#dlgPerdi").showModal()}
 const resumoPedidosAluno=()=>{
  if(!S.aluno)return '<div class="empty">Sem pedidos.</div>';
  if(S.carregandoPedidos)return '<div class="empty">Carregando pedidos...</div>';
@@ -127,7 +152,7 @@ const quando=d=>{const n=diasDesde(d);if(n===0)return "hoje";if(n===1)return "on
 function tema(){let t="auto";try{t=localStorage.getItem("achados-tema")||"auto"}catch(e){}return t}
 function atualizarTema(){const t=tema(),root=document.documentElement,b=$("#themeToggle");if(t==="auto")delete root.dataset.theme;else root.dataset.theme=t;if(b){const ic=t==="light"?"☀":t==="dark"?"☾":"◐";const nome=t==="light"?"claro":t==="dark"?"escuro":"automático";b.querySelector("span").textContent=ic;b.title="Tema: "+nome;b.setAttribute("aria-label","Tema: "+nome+". Clique para alternar")} }
 function proximoTema(){const t=tema(),n=t==="auto"?"light":t==="light"?"dark":"auto";try{localStorage.setItem("achados-tema",n)}catch(e){}atualizarTema();toast("Tema "+(n==="auto"?"automático":n==="light"?"claro":"escuro"))}
-function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("on"),2600)}
+function toast(t,ms){const e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("on"),ms||2600)}
 function comprimir(file){return new Promise((res,rej)=>{
  if(!file||!file.type.startsWith("image/"))return rej(new Error("tipo"));
  const url=URL.createObjectURL(file),img=new Image();
@@ -154,7 +179,8 @@ function publico(){
  itens.sort((a,b)=>S.ordem==="antigos"?a.data.localeCompare(b.data):S.ordem==="nome"?a.nome.localeCompare(b.nome,"pt-BR"):b.data.localeCompare(a.data));
  const novos=novosItens();
  const devolvidos=devolvidosRecentes();
- return `<section class="hero"><h1>Perdeu algo na escola?</h1><p class="lead">Veja o que já foi encontrado. Achou o seu? Envie um pedido de retirada e a coordenação confirma.</p><div class="hero-meta">${hoje()} · EEEM Nossa Senhora de Lourdes</div></section>
+ const filtrado=!!(S.q||S.cat||S.local||S.somenteFoto);
+ return `<section class="hero"><h1>Perdeu algo na escola?</h1><p class="lead">Veja o que já foi encontrado. Achou o seu? Envie um pedido de retirada e a coordenação confirma.</p><div class="hero-cta"><button class="btn" data-perdi type="button">Perdi um objeto</button><span class="hint">Não está na lista? Avise a coordenação.</span></div><div class="hero-meta">${hoje()} · EEEM Nossa Senhora de Lourdes</div></section>
  ${stats()}
  ${novos.length?`<div class="notice-new" role="status"><div><strong>🆕 ${novos.length} ${novos.length===1?"item novo encontrado":"itens novos encontrados"}</strong><span>Há achados desde sua última visita.</span></div><button class="btn sm" id="verNovos">Ver novos</button></div>`:""}
  <div class="filters"><input id="q" type="search" placeholder="Buscar por nome, descrição, local ou categoria" value="${esc(S.q)}" aria-label="Buscar itens">
@@ -165,7 +191,7 @@ function publico(){
  <div class="results-bar"><div class="results-left"><span class="results-count">${itens.length} ${itens.length===1?"item encontrado":"itens encontrados"}</span>${(S.q||S.cat||S.local||S.somenteFoto||S.ordem!=="recentes")?`<button class="btn alt sm" id="limparFiltros" type="button">Limpar filtros</button>`:""}</div><div class="results-actions"><span class="hint">${ultimaAtualizacao?`Atualizado ${ultimaAtualizacao.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`:"Lista atualizada"}</span><button class="btn alt sm" id="atualizar" type="button" title="Atualizar a lista">↻ Atualizar</button></div></div>
  ${itens.length?`<div class="grid">${itens.map(i=>{const novo=i.status==="disponivel"&&diasDesde(i.data)<=2;const pedido=db.pedidos.find(p=>p.itemId===i.id&&(p.status==="pendente"||p.status==="liberado"));const liberado=i.status==="retirada_liberada"||pedido?.status==="liberado";return `<article class="tag">${novo?`<span class="new-badge">Novo</span>`:""}${i.foto?`<button class="foto" data-zoom="${i.id}" aria-label="Ampliar a foto de ${esc(i.nome)}"><img src="${i.foto}" alt="Foto: ${esc(i.nome)}" loading="lazy"><span class="cat-badge" aria-hidden="true">${CATS[i.cat]}</span></button>`:`<div class="ico" aria-hidden="true">${CATS[i.cat]}</div>`}<h3>${esc(i.nome)}</h3><p>${esc(i.desc)}</p><div class="meta">${esc(i.local)} · achado ${quando(i.data)} (${fmt(i.data)})</div>
  ${liberado?`<span class="status released">Retirada liberada para ${esc(pedido?.liberadoPara||"aluno")}</span><button class="btn" disabled>Retirada liberada</button>`:pedido?`<span class="status">Solicitado por ${esc(pedido.solicitadoPor||"aluno")}</span><button class="btn" disabled>Aguardando a coordenação</button>`:`<button class="btn" data-claim="${i.id}">É meu</button>`}</article>`}).join("")}</div>`
- :`<div class="empty"><strong>Nenhum item encontrado.</strong><br>Tente outra palavra ou limpe os filtros. Se o seu item não está aqui, volte em alguns dias.</div>`}
+ :`<div class="empty"><strong>${filtrado?"Nenhum item encontrado com esses filtros.":"Nenhum item disponível no momento."}</strong><p>${filtrado?"Tente outra palavra, escolha outra categoria ou limpe os filtros.":"Novos achados aparecem aqui assim que a coordenação cadastrar."}</p><div class="empty-actions">${filtrado?`<button class="btn alt sm" id="limparVazio" type="button">Limpar filtros</button>`:`<button class="btn alt sm" id="atualizarVazio" type="button">↻ Atualizar</button>`}<button class="btn sm" data-perdi type="button">Perdi um objeto</button><button class="btn alt sm" data-view="ajuda" type="button">Como funciona</button></div><p class="hint">Seu item não está aqui? Avise que você perdeu: a coordenação procura e você recebe uma notificação se aparecer algo parecido.</p></div>`}
  ${devolvidos.length?`<section class="panel recent-returned"><div class="section-head"><h2>Últimas devoluções</h2><small>Disponíveis no histórico por 3 dias</small></div><div class="list">${devolvidos.map(i=>`<div class="li"><div class="info"><strong>${esc(i.nome)}</strong><br><span class="meta">${CATS[i.cat]} ${esc(i.cat)} · ${esc(i.local)} · devolvido ${quando(i.devolvidoEm.slice(0,10))}</span></div><span class="status delivered">Devolvido</span></div>`).join("")}</div></section>`:""}`;
 }
 
@@ -178,7 +204,7 @@ function ajuda(){
 
 function pedidosView(){
  if(!S.aluno)return `<section class="hero"><h1>Meus pedidos</h1><p class="lead">Sem pedidos.</p></section><div class="panel narrow"><button class="btn" id="pedidosLogin">Login do aluno</button></div>`;
- return `<section class="hero"><h1>Meus pedidos</h1><p class="lead">${esc(S.aluno.nome)} · ${esc(S.aluno.turma)}</p></section><section class="panel"><div class="section-head"><h2>Pedidos enviados</h2><small>Filtrados pelo RA da conta</small></div>${resumoPedidosAluno()}<p class="hint">Os pedidos são salvos no banco local e vinculados ao seu RA.</p></section><button class="btn alt" id="voltarItens">← Voltar aos itens</button>`;
+ return `<section class="hero"><h1>Meus pedidos</h1><p class="lead">${esc(S.aluno.nome)} · ${esc(S.aluno.turma)}</p></section><section class="panel"><div class="section-head"><h2>Pedidos enviados</h2><small>Filtrados pelo RA da conta</small></div>${resumoPedidosAluno()}<p class="hint">Os pedidos são salvos no banco local e vinculados ao seu RA.</p></section>${perdidosAluno()}<button class="btn alt" id="voltarItens">← Voltar aos itens</button>`;
 }
 
 /* Visão geral da coordenação: os números vêm do servidor (db.painel), calculados dos mesmos itens e pedidos da tela.
@@ -188,6 +214,11 @@ function painelSituacao(){
  const card=(rot,v,leg,href,destaque)=>{const miolo=`<span>${rot}</span><b>${v}</b><small>${leg}</small>`;return href?`<a class="stat${destaque?" destaque":""}" href="${href}">${miolo}</a>`:`<div class="stat">${miolo}</div>`};
  return `<section class="overview" aria-label="Visão geral"><div class="section-head"><h2>Visão geral — Achados do Lourdes</h2><small>${ultimaAtualizacao?`Atualizado às ${ultimaAtualizacao.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`:""}</small></div>
  <div class="stats">${card("Objetos cadastrados",p.cadastrados,"no total, de todos os status")}${card("Devolvidos",p.devolvidos,"entregues aos donos")}${card("Aguardando retirada",p.aguardandoRetirada,`${p.detalhe.semDono} sem dono · ${p.detalhe.retiradaLiberada} com retirada liberada`,"#lista")}${card("Novas solicitações",p.novasSolicitacoes,"pedidos aguardando análise","#pedidos",p.novasSolicitacoes>0)}</div></section>`;
+}
+/* Avisos de "perdi um objeto" abertos, com os itens achados que podem ser o mesmo objeto */
+function perdidosSecao(){
+ const l=perdidos.lista;
+ return `<section class="panel" id="perdidos"><div class="section-head"><h2>Objetos perdidos (${l.length})</h2><small>Avisos dos alunos que ainda procuram</small></div>${l.length?`<div class="list">${l.map(p=>`<div class="li"><div class="info"><strong>${CATS[p.cat]||""} ${esc(p.nome)}</strong><br>${esc(p.alunoNome)}, ${esc(p.alunoTurma)}<br><span class="meta">${esc(p.cat)}${p.local?" · "+esc(p.local):""} · perdido em ${fmt(p.data)} · avisado ${quando(p.em.slice(0,10))}</span><br><span class="meta">${esc(p.desc)}</span>${p.possiveis.length?`<br><span class="meta">🔎 Possíveis itens achados: ${p.possiveis.map(i=>esc(i.nome)+" ("+esc(i.local)+")").join("; ")}</span>`:""}</div><div class="acts"><button class="btn alt" data-perdido-enc="${p.id}" type="button">Encerrar aviso</button></div></div>`).join("")}</div>`:`<div class="empty">Nenhum aviso de objeto perdido.</div>`}</section>`;
 }
 function atividadesSecao(){
  const l=atividades.lista;
@@ -201,8 +232,9 @@ function coord(){
  const pend=db.pedidos.filter(p=>p.status==="pendente"||p.status==="liberado");
  const disp=db.itens.filter(i=>i.status==="disponivel");
  return `<section class="hero bar"><div><h1>Painel da coordenação</h1><p class="lead">Cadastre itens e responda aos pedidos de retirada.</p>${contaCoord?`<p class="hint conta-logada">Conta: <b>${esc(contaCoord)}</b></p>`:""}</div><button class="btn alt" id="sair">Sair</button></section>${painelSituacao()}
- <div class="coord-nav"><a href="#pedidos">Pedidos</a><a href="#cadastro">Cadastrar item</a><a href="#lista">Itens cadastrados</a><a href="#atividades">Atividades</a><a href="#alunos">Alunos</a><a href="#manutencao">Manutenção</a></div><section class="panel" id="pedidos"><div class="section-head"><h2>Pedidos de retirada (${pend.length})</h2><small>Analise os pedidos recebidos</small></div>
+ <div class="coord-nav"><a href="#pedidos">Pedidos</a><a href="#perdidos">Perdidos</a><a href="#cadastro">Cadastrar item</a><a href="#lista">Itens cadastrados</a><a href="#atividades">Atividades</a><a href="#alunos">Alunos</a><a href="#manutencao">Manutenção</a></div><section class="panel" id="pedidos"><div class="section-head"><h2>Pedidos de retirada (${pend.length})</h2><small>Analise os pedidos recebidos</small></div>
  ${pend.length?`<div class="list">${pend.map(p=>{const i=db.itens.find(x=>x.id===p.itemId);const liberado=p.status==="liberado";return `<div class="li"><div class="info"><strong>${esc(i.nome)}</strong><br>${esc(p.nome)}, ${esc(p.turma)}<br><span class="meta">Detalhe informado: ${esc(p.detalhe)}</span></div><div class="acts"><button class="btn alt" data-liberar="${p.id}" ${liberado?"disabled":""}>${liberado?"Retirada liberada":"Liberar retirada"}</button><button class="btn ok" data-ok="${p.id}" ${liberado?"":"disabled"}>Confirmar entrega</button><button class="btn bad" data-no="${p.id}">Recusar</button></div></div>`}).join("")}</div>`:`<div class="empty">Nenhum pedido pendente.</div>`}</section>
+ ${perdidosSecao()}
  <section class="panel" id="cadastro"><div class="section-head"><h2>Cadastrar item achado</h2><small>O item aparece imediatamente na lista pública</small></div><form id="novo">
  <div class="row2"><label>Nome do item<input name="nome" required maxlength="50"></label>
  <label>Categoria<select name="cat">${Object.keys(CATS).map(c=>`<option>${c}</option>`).join("")}</select></label></div>
@@ -257,8 +289,16 @@ document.addEventListener("click",async e=>{
  if(t.id==="voltarItens"){S.view="publico";render();return}
  if(t.id==="ajudaLogin"||t.id==="pedidosLogin"){S.view="loginAluno";render();return}
  if(t.id==="verNovos"){S.q="";S.cat="";S.local="";S.ordem="recentes";S.somenteFoto=false;marcarVisita();render();toast("Mostrando os itens novos.");return}
- if(t.id==="limparFiltros"){S.q="";S.cat="";S.local="";S.ordem="recentes";S.somenteFoto=false;render();toast("Filtros limpos.");return}
- if(t.id==="atualizar"){t.disabled=true;const ok=await carregar();render();if(ok)toast("Lista atualizada.");return} /* se falhar, carregar() já mostrou o erro */
+ if(t.dataset.perdi!==undefined){abrirPerdi();return}
+ if(t.id==="cancelPerdi"){$("#dlgPerdi").close();return}
+ if(t.dataset.perdidoFim){
+  if(!confirm("Marcar como encontrado e encerrar este aviso?"))return;
+  try{await api("POST","/api/aluno/perdidos/"+t.dataset.perdidoFim+"/encerrar");await carregarPedidosAluno();render();toast("Aviso encerrado.")}catch(er){toast(er.message)}return}
+ if(t.dataset.perdidoEnc){
+  if(!confirm("Encerrar este aviso de objeto perdido? O aluno será avisado."))return;
+  try{await api("POST","/api/perdidos/"+t.dataset.perdidoEnc+"/encerrar");await carregar();render();toast("Aviso encerrado.")}catch(er){toast(er.message)}return}
+ if(t.id==="limparFiltros"||t.id==="limparVazio"){S.q="";S.cat="";S.local="";S.ordem="recentes";S.somenteFoto=false;render();toast("Filtros limpos.");return}
+ if(t.id==="atualizar"||t.id==="atualizarVazio"){t.disabled=true;const ok=await carregar();render();if(ok)toast("Lista atualizada.");return} /* se falhar, carregar() já mostrou o erro */
  if(t.id==="drop"){$("#foto").click();return}
  if(t.id==="fotoRem"){fotoPend=null;fotoUI();return}
  if(t.id==="fecharFoto"){$("#dlgFoto").close();return}
@@ -274,13 +314,13 @@ document.addEventListener("click",async e=>{
  if(t.dataset.ok){try{await api("POST","/api/pedidos/"+t.dataset.ok+"/confirmar");await carregar();render();toast("Entrega confirmada. O item saiu da lista.")}catch(er){toast(er.message)}return}
  if(t.dataset.no){try{await api("POST","/api/pedidos/"+t.dataset.no+"/recusar");await carregar();render();toast("Pedido recusado. O item voltou a ficar disponível.")}catch(er){toast(er.message)}return}
  if(t.dataset.dev){try{await api("POST","/api/itens/"+t.dataset.dev+"/devolver");await carregar();render();toast("Item marcado como devolvido.")}catch(er){toast(er.message)}return}
- if(t.id==="sair"){try{await api("POST","/api/logout")}catch(er){}tokenCoord=null;S.logado=false;listaAlunos=[];contaCoord=null;atividades={lista:[],total:0,limite:50};zerarNotif();try{sessionStorage.removeItem("achados-token");sessionStorage.removeItem("achados-conta")}catch(er){}await carregar();render();return}
+ if(t.id==="sair"){try{await api("POST","/api/logout")}catch(er){}tokenCoord=null;S.logado=false;listaAlunos=[];contaCoord=null;atividades={lista:[],total:0,limite:50};perdidos={lista:[]};zerarNotif();try{sessionStorage.removeItem("achados-token");sessionStorage.removeItem("achados-conta")}catch(er){}await carregar();render();return}
  if(t.id==="reset"){
-  if(!confirm("Tem certeza? Isso apaga TODOS os itens, pedidos e fotos e volta para os itens de exemplo."))return;
+  if(!confirm("Tem certeza? Isso apaga TODOS os itens, pedidos, avisos de objetos perdidos e fotos e volta para os itens de exemplo."))return;
   try{await api("POST","/api/resetar");fotoPend=null;await carregar();render();toast("Todos os itens foram resetados.")}catch(er){toast(er.message)}return}
  if(t.id==="cancelClaim")$("#dlg").close();
  if(t.id==="alunoEntrar"){S.view="loginAluno";render();return}
- if(t.id==="alunoSair"){try{await api("POST","/api/aluno/logout")}catch(er){}tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];zerarNotif();S.view="loginAluno";render();toast("Login do aluno encerrado.")}
+ if(t.id==="alunoSair"){try{await api("POST","/api/aluno/logout")}catch(er){}tokenAluno=null;S.aluno=null;alunoLogado=null;S.meusPedidos=[];S.meusPerdidos=[];zerarNotif();S.view="loginAluno";render();toast("Login do aluno encerrado.")}
 });
 document.addEventListener("input",e=>{
  if(e.target.id==="q"){S.q=e.target.value;const pos=e.target.selectionStart;render();const q=$("#q");q.focus();q.setSelectionRange(pos,pos)}
@@ -310,6 +350,14 @@ document.addEventListener("submit",async e=>{
   try{const r=await api("POST","/api/aluno/login",{ra:cod});tokenAluno=r.token;S.aluno=r.aluno;alunoLogado=r.aluno;
    zerarNotif();await carregar();await carregarPedidosAluno();S.view="publico";render();toast(`Bem-vindo(a), ${r.aluno.nome.split(" ")[0]}!`);verificarNotificacoes()}
   catch(er){toast(er.message)}}
+ if(f.id==="perdiForm"){e.preventDefault();const d=Object.fromEntries(new FormData(f));const bt=f.querySelector('[type="submit"]');bt.disabled=true;
+  try{const r=await api("POST","/api/aluno/perdidos",{nome:d.nome.trim(),cat:d.cat,local:d.local,data:d.data,desc:d.desc.trim()});
+   $("#dlgPerdi").close();await carregarPedidosAluno();render();
+   const p=r.possiveis||[];
+   if(p.length)toast("Aviso enviado. Já existe item parecido na lista: "+p.map(i=>i.nome).join(", ")+". Confira!",7000);
+   else toast("Aviso enviado. Você será notificado se aparecer algo parecido.",5000)}
+  catch(er){toast(er.message)}
+  finally{bt.disabled=false}}
  if(f.id==="novo"){e.preventDefault();const d=Object.fromEntries(new FormData(f));
   const novo={nome:d.nome.trim(),cat:d.cat,local:d.local,data:d.data,desc:d.desc.trim()};
   if(fotoPend)novo.foto=fotoPend;

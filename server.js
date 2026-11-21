@@ -123,7 +123,8 @@ const exemplos = () => ({
   pedidos: [],
   prox: 7,
   atividades: [], proxAtiv: 1,     // registro de ações da coordenação
-  notificacoes: [], proxNotif: 1   // avisos para a coordenação e para os alunos
+  notificacoes: [], proxNotif: 1,  // avisos para a coordenação e para os alunos
+  perdidos: [], proxPerd: 1        // avisos de "perdi um objeto" feitos pelos alunos
 });
 
 function garantirPastas() {
@@ -175,6 +176,9 @@ function lerBanco() {
   const maiorId = lista => lista.reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0);
   if (!Number.isInteger(b.proxAtiv)) { b.proxAtiv = maiorId(b.atividades) + 1; migrado = true; }
   if (!Number.isInteger(b.proxNotif)) { b.proxNotif = maiorId(b.notificacoes) + 1; migrado = true; }
+  // bancos criados antes dos avisos de objeto perdido ganham os campos novos
+  if (!Array.isArray(b.perdidos)) { b.perdidos = []; migrado = true; }
+  if (!Number.isInteger(b.proxPerd)) { b.proxPerd = maiorId(b.perdidos) + 1; migrado = true; }
   if (migrado) gravarBanco(b);
   return b;
 }
@@ -246,6 +250,8 @@ const limiteLogin = criarLimite(5, 15 * 60 * 1000);   // 5 erros de senha a cada
 const limitePedidos = criarLimite(60, 60 * 60 * 1000);       // 60 pedidos por hora por IP (a escola toda pode compartilhar o mesmo IP)
 const limitePedidosAluno = criarLimite(8, 60 * 60 * 1000);   // 8 pedidos por hora por aluno
 const limiteRA = criarLimite(LIMITE_RA_ERROS, 15 * 60 * 1000); // erros de RA por IP (impede ficar adivinhando RAs)
+const limitePerdidos = criarLimite(60, 60 * 60 * 1000);      // 60 avisos de objeto perdido por hora por IP (a escola pode compartilhar o IP)
+const limitePerdidosAluno = criarLimite(5, 60 * 60 * 1000);  // 5 avisos por hora por aluno
 const limiteGeral = criarLimite(300, 60 * 1000);      // 300 chamadas à API por minuto por IP
 
 /* Compara senhas sem vazar informação pelo tempo de resposta */
@@ -449,6 +455,42 @@ function marcarLidas(b, para) {
   return mudou;
 }
 
+/* ---------- Avisos de "perdi um objeto" ---------- */
+
+const MAX_PERDIDOS = 2000;          // teto de avisos guardados
+const MAX_PERDIDOS_ABERTOS = 5;     // avisos abertos ao mesmo tempo por aluno
+const DIAS_PERDIDO_ENCERRADO = 30;  // avisos encerrados são apagados depois disso
+
+const normalizarTexto = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9\s]/g, " ").trim();
+const PALAVRAS_COMUNS = new Set(["com", "uma", "uns", "para", "por", "que", "dos", "das", "mas", "sem", "meu", "seu", "sua", "minha", "tem", "foi", "ele", "ela", "cor", "item", "objeto", "perdi", "achado"]);
+const palavrasChave = s => new Set(normalizarTexto(s).split(/\s+/).filter(w => w.length > 2 && !PALAVRAS_COMUNS.has(w)));
+function palavrasEmComum(a, b) {
+  const B = palavrasChave(b);
+  let n = 0;
+  for (const w of palavrasChave(a)) if (B.has(w)) n++;
+  return n;
+}
+
+/* O item achado pode ser o objeto perdido? Precisa estar disponível e ser da mesma categoria, com ao menos uma
+   palavra importante em comum (nome ou descrição). No modo não estrito (sugestão para a coordenação, que confere
+   com os próprios olhos) também vale o mesmo local. O aviso automático ao aluno usa o modo estrito. */
+function perdidoCasaComItem(p, item, estrito) {
+  if (!item || item.status !== "disponivel" || item.cat !== p.cat) return false;
+  if (palavrasEmComum(p.nome + " " + p.desc, item.nome + " " + item.desc) > 0) return true;
+  return !estrito && !!p.local && p.local === item.local;
+}
+
+const itensPossiveis = (b, p, estrito) => b.itens.filter(i => perdidoCasaComItem(p, i, estrito));
+
+/* Remove avisos já encerrados há muito tempo. Chame antes de gravarBanco(b). */
+function podarPerdidos(b) {
+  const limite = Date.now() - DIAS_PERDIDO_ENCERRADO * 86400000;
+  b.perdidos = b.perdidos.filter(p => p.status === "aberto" || Date.parse(p.encerradoEm || p.criadoEm) > limite);
+}
+
+/* Visão do aluno: só os avisos dele */
+const perdidoParaAluno = p => ({ id: p.id, nome: p.nome, cat: p.cat, local: p.local, data: p.data, desc: p.desc, status: p.status, criadoEm: p.criadoEm });
+
 /* ---------- API ---------- */
 
 async function api(req, res, rota) {
@@ -461,7 +503,7 @@ async function api(req, res, rota) {
       const b = lerBanco();
       if (coordenacaoLogada(req)) {
         // o registro de atividades e as notificações têm rotas próprias; aqui vai o painel de situação
-        const { atividades, notificacoes, proxAtiv, proxNotif, ...base } = b;
+        const { atividades, notificacoes, perdidos, proxAtiv, proxNotif, proxPerd, ...base } = b;
         return responderJSON(res, 200, { ...base, painel: calcularPainel(b) });
       }
       const logadoAluno = !!alunoDaSessao(req); // quem não está logado não recebe nomes de alunos
@@ -554,6 +596,67 @@ async function api(req, res, rota) {
       return responderJSON(res, 200, { ok: true });
     }
 
+    // GET /api/aluno/perdidos -> só os avisos de objeto perdido do aluno da sessão
+    if (req.method === "GET" && rota === "/api/aluno/perdidos") {
+      const aluno = alunoDaSessao(req);
+      if (!aluno) return responderJSON(res, 401, { erro: "Entre com o seu RA para ver os seus avisos." });
+      const meus = lerBanco().perdidos.filter(p => p.alunoId === aluno.id).slice(-50).reverse().map(perdidoParaAluno);
+      return responderJSON(res, 200, meus);
+    }
+
+    // POST /api/aluno/perdidos -> o aluno avisa que perdeu um objeto (nome e turma vêm da sessão)
+    if (req.method === "POST" && rota === "/api/aluno/perdidos") {
+      const aluno = alunoDaSessao(req);
+      if (!aluno) return responderJSON(res, 401, { erro: "Entre com o seu RA para avisar um objeto perdido." });
+      if (!limitePerdidos.permitir(ipDe(req)) || !limitePerdidosAluno.permitir(String(aluno.id))) {
+        return responderJSON(res, 429, { erro: "Muitos avisos em pouco tempo. Tente de novo mais tarde." });
+      }
+      const c = await lerCorpo(req);
+      const nome = texto(c.nome, 50), desc = texto(c.desc, 140);
+      const cat = texto(c.cat, 40), local = texto(c.local, 60), data = texto(c.data, 10);
+      if (!nome || !desc || !CATEGORIAS.includes(cat) || (local && !LOCAIS.includes(local)) ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(data) || !dataReal(data) || data > new Date().toISOString().slice(0, 10)) {
+        return responderJSON(res, 400, { erro: "Dados do aviso inválidos." });
+      }
+      const b = lerBanco();
+      podarPerdidos(b);
+      if (b.perdidos.length >= MAX_PERDIDOS) return responderJSON(res, 400, { erro: "Limite de avisos guardados atingido. Fale com a coordenação." });
+      const abertos = b.perdidos.filter(p => p.alunoId === aluno.id && p.status === "aberto");
+      if (abertos.length >= MAX_PERDIDOS_ABERTOS) {
+        return responderJSON(res, 409, { erro: "Você já tem " + MAX_PERDIDOS_ABERTOS + " avisos abertos. Encerre algum antes de criar outro." });
+      }
+      if (abertos.some(p => normalizarTexto(p.nome) === normalizarTexto(nome) && p.cat === cat)) {
+        return responderJSON(res, 409, { erro: "Você já avisou que perdeu esse objeto." });
+      }
+      const aviso = {
+        id: b.proxPerd++, nome, cat, local, data, desc,
+        alunoId: aluno.id, alunoNome: aluno.nome, alunoTurma: aluno.turma,
+        criadoEm: new Date().toISOString(), status: "aberto"
+      };
+      b.perdidos.push(aviso);
+      notificar(b, PARA_COORDENACAO, "novo_perdido", "Novo aviso de objeto perdido: " + aluno.nome + " (" + aluno.turma + ") perdeu \"" + nome + "\".", { perdidoId: aviso.id });
+      gravarBanco(b);
+      // se já existe um item parecido na lista, o aluno fica sabendo na hora
+      const possiveis = itensPossiveis(b, aviso, true).slice(0, 3).map(i => ({ id: i.id, nome: i.nome }));
+      return responderJSON(res, 201, { ok: true, id: aviso.id, possiveis });
+    }
+
+    // POST /api/aluno/perdidos/:id/encerrar -> o aluno avisa que já encontrou (ou desistiu de procurar)
+    const rotaPerdidoAluno = /^\/api\/aluno\/perdidos\/(\d+)\/encerrar$/.exec(rota);
+    if (req.method === "POST" && rotaPerdidoAluno) {
+      const aluno = alunoDaSessao(req);
+      if (!aluno) return responderJSON(res, 401, { erro: "Entre com o seu RA para encerrar o aviso." });
+      const b = lerBanco();
+      const aviso = b.perdidos.find(p => p.id === Number(rotaPerdidoAluno[1]) && p.alunoId === aluno.id);
+      if (!aviso) return responderJSON(res, 404, { erro: "Aviso não encontrado." });
+      if (aviso.status !== "aberto") return responderJSON(res, 409, { erro: "Este aviso já foi encerrado." });
+      aviso.status = "encerrado";
+      aviso.encerradoEm = new Date().toISOString();
+      aviso.encerradoPor = "aluno";
+      gravarBanco(b);
+      return responderJSON(res, 200, { ok: true });
+    }
+
     if (req.method === "POST" && rota === "/api/logout") {
       const auth = req.headers["authorization"] || "";
       sessoes.delete(auth.startsWith("Bearer ") ? auth.slice(7) : "");
@@ -633,6 +736,14 @@ async function api(req, res, rota) {
       }
       b.itens.unshift(item);
       registrarAtividade(b, contaDaSessao(req), "cadastrar_item", "Cadastrou o item \"" + item.nome + "\" (" + item.cat + ", " + item.local + ")", { itemId: item.id });
+      // quem avisou que perdeu algo parecido recebe uma notificação (no máximo 30 por item cadastrado)
+      let avisados = 0;
+      for (const aviso of b.perdidos) {
+        if (avisados >= 30) break;
+        if (aviso.status !== "aberto" || !perdidoCasaComItem(aviso, item, true)) continue;
+        notificar(b, aviso.alunoId, "possivel_item", "Cadastraram um item que pode ser o objeto que você perdeu (\"" + aviso.nome + "\"): \"" + item.nome + "\". Confira na lista de itens achados e, se for seu, clique em \"É meu\".", { perdidoId: aviso.id, itemId: item.id });
+        avisados++;
+      }
       gravarBanco(b);
       return responderJSON(res, 201, { ok: true, id: item.id });
     }
@@ -698,7 +809,7 @@ async function api(req, res, rota) {
       // o registro de atividades NÃO é apagado no reset: ele guarda justamente quem fez o reset
       let antigo = null;
       try { antigo = lerBanco(); } catch (e) { /* banco ilegível: recomeça sem o histórico */ }
-      if (antigo) { novo.atividades = antigo.atividades; novo.proxAtiv = antigo.proxAtiv; novo.proxNotif = antigo.proxNotif; }
+      if (antigo) { novo.atividades = antigo.atividades; novo.proxAtiv = antigo.proxAtiv; novo.proxNotif = antigo.proxNotif; novo.proxPerd = antigo.proxPerd; }
       registrarAtividade(novo, conta, "resetar", "Resetou os dados: apagou itens, pedidos e fotos e voltou aos itens de exemplo");
       gravarBanco(novo);
       return responderJSON(res, 200, { ok: true });
@@ -712,6 +823,34 @@ async function api(req, res, rota) {
     if (req.method === "POST" && rota === "/api/notificacoes/lidas") {
       const b = lerBanco();
       if (marcarLidas(b, PARA_COORDENACAO)) gravarBanco(b);
+      return responderJSON(res, 200, { ok: true });
+    }
+
+    // GET /api/perdidos -> avisos de objeto perdido ainda abertos, com possíveis itens achados (mais recentes primeiro)
+    if (req.method === "GET" && rota === "/api/perdidos") {
+      const b = lerBanco();
+      const abertos = b.perdidos.filter(p => p.status === "aberto").reverse().slice(0, 200).map(p => ({
+        id: p.id, em: p.criadoEm, nome: p.nome, cat: p.cat, local: p.local, data: p.data, desc: p.desc,
+        alunoNome: p.alunoNome, alunoTurma: p.alunoTurma,
+        possiveis: itensPossiveis(b, p, false).slice(0, 3).map(i => ({ id: i.id, nome: i.nome, local: i.local, data: i.data }))
+      }));
+      return responderJSON(res, 200, { perdidos: abertos });
+    }
+
+    // POST /api/perdidos/:id/encerrar -> a coordenação encerra o aviso (objeto encontrado ou aviso antigo)
+    const rotaPerdidoCoord = /^\/api\/perdidos\/(\d+)\/encerrar$/.exec(rota);
+    if (req.method === "POST" && rotaPerdidoCoord) {
+      const b = lerBanco();
+      const aviso = b.perdidos.find(p => p.id === Number(rotaPerdidoCoord[1]));
+      if (!aviso) return responderJSON(res, 404, { erro: "Aviso não encontrado." });
+      if (aviso.status !== "aberto") return responderJSON(res, 409, { erro: "Este aviso já foi encerrado." });
+      const conta = contaDaSessao(req);
+      aviso.status = "encerrado";
+      aviso.encerradoEm = new Date().toISOString();
+      aviso.encerradoPor = conta;
+      registrarAtividade(b, conta, "encerrar_perdido", "Encerrou o aviso de objeto perdido \"" + aviso.nome + "\" de " + aviso.alunoNome + " (" + aviso.alunoTurma + ")", { perdidoId: aviso.id });
+      notificar(b, aviso.alunoId, "perdido_encerrado", "A coordenação encerrou o seu aviso do objeto perdido \"" + aviso.nome + "\". Se ainda não encontrou, faça um novo aviso.", { perdidoId: aviso.id });
+      gravarBanco(b);
       return responderJSON(res, 200, { ok: true });
     }
 
