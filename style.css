@@ -182,3 +182,8 @@ a.stat{text-decoration:none;color:inherit}
 .status.found{background:var(--teal);color:#fff}
 .possivel-aviso{color:var(--ink);font-weight:600}
 .btn.ok.sm{box-shadow:none}
+
+/* --- Privacidade e links --- */
+.privacy-link{text-align:center;margin-top:16px}
+.link-btn{background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;padding:0}
+#dlgPriv p{margin:8px 0}
