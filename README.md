@@ -15,3 +15,10 @@ Aplicação de achados e perdidos da EEEM Nossa Senhora de Lourdes. O mesmo serv
 - Notificações (sino) para o aluno quando o pedido muda de status e para a coordenação quando chega um pedido ou aviso
 - Interface responsiva, tema claro/escuro e aviso de itens novos
 
+
+## Manutenção e privacidade
+
+- `GET /api/saude` responde `ok` e o tempo no ar, sem dados de alunos. Use para monitorar o site (Render, UptimeRobot).
+- Limpeza automática a cada 6 horas: apaga itens devolvidos com mais de `DIAS_ITEM_DEVOLVIDO` dias (padrão 180), junto com os pedidos deles; avisos de objeto perdido encerrados há mais de 30 dias; e fotos que nenhum item usa (poupa as de menos de 1 hora).
+- Erros do servidor vão para `dados/erros.log` (sem dados de alunos). Erros não tratados encerram o processo e o Render o reinicia.
+- O texto de privacidade fica em "Como funciona" > "Privacidade e dados". Confirme com a direção da escola antes de divulgar.

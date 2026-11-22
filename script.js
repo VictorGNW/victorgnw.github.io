@@ -197,7 +197,7 @@ function publico(){
 
 function ajuda(){
  return `<section class="hero"><h1>Como funciona</h1><p class="lead">Um guia rápido para encontrar seu item e fazer a retirada com segurança.</p></section>
- <section class="panel help-grid"><div class="help-card"><b class="help-icon">1</b><div><h2>Encontre o item</h2><p>Use a busca, as categorias, o local ou o filtro de fotos. Confira descrição, data e local antes de solicitar.</p></div></div><div class="help-card"><b class="help-icon">2</b><div><h2>Faça o pedido</h2><p>Clique em “É meu” e informe um detalhe que ajude a comprovar que o item é seu.</p></div></div><div class="help-card"><b class="help-icon">3</b><div><h2>Aguarde a análise</h2><p>A coordenação verifica o pedido. Enquanto estiver em análise, o item fica sinalizado para evitar pedidos duplicados.</p></div></div><div class="help-card"><b class="help-icon">4</b><div><h2>Retire na coordenação</h2><p>Após a confirmação, siga a orientação da escola para retirar o item. Se necessário, leve seu documento ou identificação escolar.</p></div></div></section>
+ <section class="panel help-grid"><div class="help-card"><b class="help-icon">1</b><div><h2>Encontre o item</h2><p>Use a busca, as categorias, o local ou o filtro de fotos. Confira descrição, data e local antes de solicitar.</p></div></div><div class="help-card"><b class="help-icon">2</b><div><h2>Faça o pedido</h2><p>Clique em “É meu” e informe um detalhe que ajude a comprovar que o item é seu.</p></div></div><div class="help-card"><b class="help-icon">3</b><div><h2>Aguarde a análise</h2><p>A coordenação verifica o pedido. Enquanto estiver em análise, o item fica sinalizado para evitar pedidos duplicados.</p></div></div><div class="help-card"><b class="help-icon">4</b><div><h2>Retire na coordenação</h2><p>Após a confirmação, siga a orientação da escola para retirar o item. Se necessário, leve seu documento ou identificação escolar.</p></div></div><p class="hint privacy-link"><button class="link-btn" data-privacidade type="button">Privacidade e dados</button></p></section>
  <section class="panel"><h2>Se não encontrar agora</h2><p class="hint">Novos itens podem ser cadastrados ao longo dos dias. Ative o aviso de itens novos ao voltar ao site e confira novamente depois.</p><p class="hint">As informações usadas no pedido são destinadas à coordenação para conferir a propriedade do item.</p></section>
  <section class="panel"><div class="section-head"><h2>Meus pedidos</h2><small>${S.aluno?`${esc(S.aluno.nome)} · ${esc(S.aluno.turma)}`:'Acompanhe seus pedidos'}</small></div>${S.aluno?`<p class="hint">Aqui aparecem os pedidos enviados pela sua conta neste dispositivo.</p>${resumoPedidosAluno()}`:`<div class="empty">Sem pedidos.</div>`}</section>`;
 }
@@ -277,6 +277,7 @@ document.addEventListener("click",async e=>{
  if(z){const i=db.itens.find(x=>x.id===+z.dataset.zoom);if(i&&i.foto){$("#fotoGrande").src=i.foto;$("#fotoGrande").alt="Foto: "+i.nome;$("#fotoLegenda").textContent=i.nome+" · "+i.local;$("#dlgFoto").showModal()}return}
  if(e.target===$("#dlgFoto")){$("#dlgFoto").close();return}
  if(e.target===$("#dlgNotif")){$("#dlgNotif").close();return}
+ if(e.target===$("#dlgPriv")){$("#dlgPriv").close();return}
  const t=e.target.closest("button");if(!t)return;
  if(t.id==="themeToggle"){proximoTema();return}
  if(t.id==="notifBtn"){await abrirNotificacoes();return}
@@ -289,6 +290,8 @@ document.addEventListener("click",async e=>{
  if(t.id==="voltarItens"){S.view="publico";render();return}
  if(t.id==="ajudaLogin"||t.id==="pedidosLogin"){S.view="loginAluno";render();return}
  if(t.id==="verNovos"){S.q="";S.cat="";S.local="";S.ordem="recentes";S.somenteFoto=false;marcarVisita();render();toast("Mostrando os itens novos.");return}
+ if(t.dataset.privacidade!==undefined){$("#dlgPriv").showModal();return}
+ if(t.id==="fecharPriv"){$("#dlgPriv").close();return}
  if(t.dataset.perdi!==undefined){abrirPerdi();return}
  if(t.id==="cancelPerdi"){$("#dlgPerdi").close();return}
  if(t.dataset.perdidoFim){

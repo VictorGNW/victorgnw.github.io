@@ -15,6 +15,7 @@
      DATA_DIR            pasta persistente dos dados (no Render: /var/data)
      CONFIAR_PROXY       "sim" quando há Caddy/Cloudflare na frente (usa o IP real do visitante)
      BACKUPS_MANTER      quantos backups guardar (padrão 14)
+     DIAS_ITEM_DEVOLVIDO quantos dias um item devolvido fica guardado antes de ser apagado, com seus pedidos (padrão 180)
      HTTPS_CERT          caminho do certificado (.pem/.crt) para o servidor falar HTTPS sozinho
      HTTPS_KEY           caminho da chave privada (.pem/.key); precisa vir junto com HTTPS_CERT
      PORTA_HTTP          (com HTTPS) porta extra que só redireciona para HTTPS
@@ -51,6 +52,7 @@ const MAX_PEDIDOS = 10000; // teto de pedidos guardados
 const HOST = process.env.HOST || "0.0.0.0";
 const CONFIAR_PROXY = process.env.CONFIAR_PROXY === "sim";
 const BACKUPS_MANTER = Number(process.env.BACKUPS_MANTER) || 14;
+const DIAS_ITEM_DEVOLVIDO = Number(process.env.DIAS_ITEM_DEVOLVIDO) || 180;
 const RAIZ = __dirname;
 const PASTA_DADOS = path.resolve(process.env.DATA_DIR || path.join(RAIZ, "dados"));
 const PASTA_FOTOS = path.join(PASTA_DADOS, "fotos");
@@ -279,6 +281,58 @@ function fazerBackup() {
   }
 }
 
+/* ---------- Registro de erros do servidor ---------- */
+
+/* Anota em dados/erros.log o que deu errado (sem corpo de requisição, senhas ou dados de alunos).
+   Mesmo esquema de tamanho do log de segurança: passando de 1 MB, o antigo vira erros.log.1. */
+const ARQ_ERROS = path.join(PASTA_DADOS, "erros.log");
+function registrarErro(onde, erro) {
+  const detalhe = erro && erro.stack ? erro.stack.split("\n").slice(0, 4).join(" | ") : String(erro);
+  const linha = new Date().toISOString() + " " + String(onde).slice(0, 120) + " " + detalhe.replace(/[\r\n]+/g, " ").slice(0, 600);
+  console.error("[erro] " + linha);
+  try {
+    garantirPastas();
+    try { if (fs.statSync(ARQ_ERROS).size > 1024 * 1024) fs.renameSync(ARQ_ERROS, ARQ_ERROS + ".1"); } catch (e) { /* ainda não existe */ }
+    fs.appendFileSync(ARQ_ERROS, linha + "\n", { mode: 0o600 });
+  } catch (e) { /* o registro de erro nunca pode derrubar o site */ }
+}
+
+/* ---------- Limpeza de dados antigos ---------- */
+
+/* Apaga o que já não precisa ficar guardado (ver o aviso de privacidade no site):
+   - itens devolvidos há mais de DIAS_ITEM_DEVOLVIDO dias, com os pedidos deles;
+   - avisos de objeto perdido encerrados há mais de 30 dias (podarPerdidos);
+   - fotos que nenhum item usa (sobras de cadastros interrompidos ou de itens apagados).
+   Fotos com menos de 1 hora são poupadas, para não apagar a foto de um cadastro em andamento. */
+function limparDados() {
+  try {
+    const b = lerBanco();
+    let mudou = false;
+    const antesPerdidos = b.perdidos.length;
+    podarPerdidos(b);
+    if (b.perdidos.length !== antesPerdidos) mudou = true;
+    const limite = Date.now() - DIAS_ITEM_DEVOLVIDO * 86400000;
+    const saem = new Set(b.itens.filter(i => i.status === "devolvido" && i.devolvidoEm && Date.parse(i.devolvidoEm) < limite).map(i => i.id));
+    if (saem.size) {
+      b.itens = b.itens.filter(i => !saem.has(i.id));
+      b.pedidos = b.pedidos.filter(p => !saem.has(p.itemId));
+      mudou = true;
+    }
+    if (mudou) gravarBanco(b);
+    const usadas = new Set(b.itens.filter(i => i.foto).map(i => path.basename(i.foto)));
+    const agora = Date.now();
+    for (const nome of fs.readdirSync(PASTA_FOTOS)) {
+      if (usadas.has(nome)) continue;
+      const caminho = path.join(PASTA_FOTOS, nome);
+      try { if (agora - fs.statSync(caminho).mtimeMs > 60 * 60 * 1000) fs.unlinkSync(caminho); } catch (e) { /* ignora */ }
+    }
+    if (saem.size) registrarAtividade(b, "sistema", "limpeza_automatica", "Apagou " + saem.size + (saem.size === 1 ? " item devolvido antigo" : " itens devolvidos antigos") + " e os pedidos deles");
+    if (saem.size) gravarBanco(b);
+  } catch (e) {
+    registrarErro("limpeza de dados", e);
+  }
+}
+
 /* ---------- Registro de eventos de segurança ---------- */
 
 /* Anota em dados/seguranca.log (e no terminal) logins, bloqueios e resets, com o IP de quem fez.
@@ -499,6 +553,18 @@ async function api(req, res, rota) {
     if (!limiteGeral.permitir(ipDe(req))) {
       return responderJSON(res, 429, { erro: "Muitas requisições. Aguarde um instante." });
     }
+    // GET /api/saude -> para monitoramento (Render, UptimeRobot). Não mostra dados de alunos nem contagens.
+    if (req.method === "GET" && rota === "/api/saude") {
+      let bancoOk = true;
+      try { lerBanco(); } catch (e) { bancoOk = false; }
+      let ultimoBackup = null;
+      try {
+        const bks = fs.readdirSync(PASTA_BACKUPS).filter(n => /^banco-\d{4}-\d{2}-\d{2}\.json$/.test(n)).sort();
+        ultimoBackup = bks.length ? bks[bks.length - 1].slice(6, 16) : null;
+      } catch (e) { /* ainda não há backup */ }
+      return responderJSON(res, bancoOk ? 200 : 503, { ok: bancoOk, uptimeSegundos: Math.round(process.uptime()), banco: bancoOk, ultimoBackup });
+    }
+
     // GET /api/dados -> dados completos para a coordenação; visão pública com nomes mínimos.
     if (req.method === "GET" && rota === "/api/dados") {
       const b = lerBanco();
@@ -1026,7 +1092,7 @@ function tratarRequisicao(req, res) {
     }
     estatico(req, res, rota);
   } catch (e) {
-    console.error("Erro ao tratar requisição:", e);
+    registrarErro("requisição " + req.method + " " + (req.url || "").split("?")[0], e);
     try { responderTexto(res, 500, "Erro interno do servidor."); } catch (e2) { /* conexão já fechada */ }
   }
 }
@@ -1062,8 +1128,9 @@ if (USAR_HTTPS && PORTA_HTTP) {
 }
 
 lerBanco(); // cria a pasta dados/ e o banco.json na primeira vez
+limparDados();
 fazerBackup();
-setInterval(fazerBackup, 6 * 60 * 60 * 1000).unref(); // a cada 6 horas (mantém 1 por dia)
+setInterval(() => { limparDados(); fazerBackup(); }, 6 * 60 * 60 * 1000).unref(); // a cada 6 horas: limpa e faz a cópia (1 por dia)
 
 servidor.requestTimeout = 30 * 1000;  // conexões lentas demais são cortadas
 servidor.headersTimeout = 15 * 1000;
@@ -1080,6 +1147,10 @@ servidor.listen(PORTA, HOST, () => {
   if (FORCAR_HTTPS && !USAR_HTTPS && !CONFIAR_PROXY) console.log("ATENÇÃO: FORCAR_HTTPS=sim sem HTTPS_CERT/HTTPS_KEY e sem CONFIAR_PROXY=sim vai redirecionar todo acesso e o site não abrirá.");
   console.log("HTTPS: " + (USAR_HTTPS ? "ligado (certificado próprio)" : CONFIAR_PROXY ? "pelo proxy" : "desligado") + (FORCAR_HTTPS ? " | redirecionamento forçado" : ""));
 });
+
+// Erros fora de uma requisição: ficam registrados. Em erro não tratado o processo para e o Render o reinicia.
+process.on("uncaughtException", erro => { registrarErro("exceção não tratada", erro); process.exit(1); });
+process.on("unhandledRejection", erro => registrarErro("promessa não tratada", erro));
 
 // Desligamento limpo (Ctrl+C ou serviço parando): termina o que está em andamento
 for (const sinal of ["SIGINT", "SIGTERM"]) {

@@ -51,6 +51,17 @@
 <button type="submit" class="btn">Enviar aviso</button>
 </div></form></dialog>
 
+<dialog id="dlgPriv" aria-labelledby="privT">
+<h2 id="privT">Privacidade e dados</h2>
+<p><b>Quais dados são guardados.</b> Nome, turma e RA do aluno, quando ele pede a retirada de um item ou avisa um objeto perdido. Também a descrição do item e a foto, que deve mostrar só o objeto, sem pessoas.</p>
+<p><b>Quem vê.</b> A coordenação vê nome, turma e pedidos. O aluno vê somente os próprios pedidos e avisos. Quem visita o site sem entrar vê os itens, sem nomes de alunos.</p>
+<p><b>Por quanto tempo.</b> A foto de um item é apagada quando ele é devolvido. Itens devolvidos são apagados após 180 dias, junto com os pedidos deles. Avisos de objeto perdido encerrados são apagados após 30 dias. Avisos ainda abertos ficam guardados até serem encerrados. Cópias de segurança diárias são mantidas por 14 dias.</p>
+<p><b>Para que servem.</b> Organizar a devolução de achados da escola. Os dados ficam guardados no servidor de hospedagem do site.</p>
+<p><b>Como pedir a remoção.</b> Procure a coordenação da escola.</p>
+<p class="hint">Texto de orientação. Confirme com a direção da escola antes de divulgar o site.</p>
+<div class="acts" style="display:flex;justify-content:flex-end"><button class="btn" id="fecharPriv" type="button">Fechar</button></div>
+</dialog>
+
 <dialog id="dlgNotif" aria-labelledby="notifTitulo" class="dlg-notif">
 <h2 id="notifTitulo">Notificações</h2>
 <div id="notifLista" class="list"></div>
